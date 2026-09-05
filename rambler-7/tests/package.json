@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "description": "Test suites for the Rambler 7 recorder. Not deployed.",
   "scripts": {
-    "test": "node extract.js && node test-core.js && node test-ui.js && node test-layout.js && node test-deploy.js"
+    "test": "node extract.js && node test-core.js && node test-ui.js && node test-layout.js && node test-deploy.js && node test-audio.js"
   },
   "devDependencies": {
     "fake-indexeddb": "^6.0.0",

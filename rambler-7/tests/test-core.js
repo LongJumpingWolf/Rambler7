@@ -285,6 +285,17 @@ group("Database that never opens");
   eq("recording still works with no database", (await h.all()).length, 1);
 }
 
+
+group("Recording format preference");
+eq("m4a is chosen when the browser can record it", Core.pickMime({ isTypeSupported: t => true }), "audio/mp4;codecs=mp4a.40.2");
+eq("plain mp4 is next", Core.pickMime({ isTypeSupported: t => t === "audio/mp4" }), "audio/mp4");
+eq("WebM only when nothing portable is offered", Core.pickMime({ isTypeSupported: t => t.indexOf("webm") > -1 }), "audio/webm;codecs=opus");
+ok("an m4a recording needs no conversion", Core.needsConvert("audio/mp4") === false);
+ok("an aac recording needs no conversion", Core.needsConvert("audio/aac") === false);
+ok("an mp3 file needs no conversion", Core.needsConvert("audio/mpeg") === false);
+ok("a WebM recording does need conversion", Core.needsConvert("audio/webm;codecs=opus") === true);
+ok("an ogg recording does need conversion", Core.needsConvert("audio/ogg;codecs=opus") === true);
+ok("an unknown or missing type is treated as needing conversion", Core.needsConvert("") === true && Core.needsConvert(undefined) === true);
 console.log("\n" + "=".repeat(52));
 console.log((fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
 if (fail) { console.log("failed:\n - " + fails.join("\n - ")); process.exit(1); }

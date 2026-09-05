@@ -1,11 +1,12 @@
 /* Rambler 7 service worker.
    Bump VERSION whenever index.html changes so clients pick up the new shell. */
-const VERSION = "v1";
+const VERSION = "v3";
 const CACHE = "rambler7-" + VERSION;
 const SHELL = [
   "/",
   "/index.html",
   "/manifest.webmanifest",
+  "/lame.js",
   "/icons/icon-192.png",
   "/icons/icon-512.png",
   "/icons/icon-maskable-512.png",
