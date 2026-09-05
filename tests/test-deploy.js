@@ -91,7 +91,7 @@ ok("the encoder ships with the site", exists("lame.js"));
 ok("it is precached for offline export", /"\/lame\.js"/.test(sw));
 ok("it is cached hard, it never changes", /immutable/.test((vercel.headers.find(h=>h.source==="/lame.js")||{headers:[]}).headers.map(x=>x.value).join(" ")));
 ok("it is loaded on demand, not on every page load", !/<script src="lame\.js"/.test(html) && /sc\.src="lame\.js"/.test(html));
-ok("the service worker version was bumped for the new shell", /VERSION = "v2"/.test(sw));
+ok("the service worker version was bumped for the new shell", /VERSION = "v4"/.test(sw));
 console.log("\n" + "=".repeat(52));
 console.log((fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
 if (fail) { console.log("failed:\n - " + fails.join("\n - ")); process.exit(1); }

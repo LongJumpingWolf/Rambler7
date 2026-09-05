@@ -52,7 +52,7 @@ npm install
 npm test
 ```
 
-340 checks across five suites, run in Node against the real `index.html`:
+398 checks across five suites, run in Node against the real `index.html`:
 
 - **core** — formatting, rename validation, filename sanitising, take numbering, and the
   storage layer against a real IndexedDB implementation. Includes 5 MB round trips,
@@ -78,16 +78,25 @@ Audio is stored as `ArrayBuffer` rather than `Blob`, which sidesteps a long-stan
 iOS Safari bug with Blobs in IndexedDB. Writes are read back and length-checked, so a
 silently failed write reports rather than pretending.
 
-**Level.** Raw microphone input is quiet, especially in hi-fi mode where auto gain is off.
-Audio is recorded through a high-pass, makeup gain and limiter chain, so what lands on
-disk is already at a usable level. On export it is levelled again against the 99.5th
-percentile rather than the absolute peak, so a single cough or knock cannot hold a whole
-take down.
+**Level.** Microphones vary by two orders of magnitude, so a fixed boost cannot work.
+Audio is recorded through a high-pass, an automatic gain stage, a compressor and a
+limiter. The gain stage measures the microphone itself, sixty times a second, and moves
+toward a target level: it lifts gently, ducks quickly, and holds still during pauses so
+the room noise is never pumped up. The working figure is shown on the display while you
+hold the button.
 
-**Export format.** Browsers record WebM/Opus, which most phones, chat apps and audio
-players refuse to open. Takes are stored in the recorded format so saving is instant,
-then converted to MP3 the first time you share or download one, cached for the rest of
-the session. Safari records AAC in an `.m4a` already, so that passes through untouched.
+Finished takes are measured once more. Anything still noticeably quiet is levelled
+against the 99.5th percentile rather than the absolute peak, so a single cough or a knock
+on the microphone cannot hold a whole take down.
+
+**Format.** New takes are recorded straight to `.m4a` wherever the browser supports it,
+which needs no conversion at all. Browsers that can only produce WebM get one MP3 pass at
+save time, shown as a percentage on the display. Either way what lands in the library is
+a file any phone or chat app will open.
+
+Takes recorded by earlier builds are still sitting in the library as WebM. They are
+labelled as such and converted to MP3 the first time you share or download them, cached
+for the rest of the session. Nothing is rewritten behind your back.
 
 **Storage.** Everything lives in the visitor's own browser under the `rambler7` database.
 The site has no backend, no analytics and no network calls at all.

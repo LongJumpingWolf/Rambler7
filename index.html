@@ -298,11 +298,19 @@ function nextName(list){
   });
   return "Take "+pad(max+1,3);
 }
+/* m4a first: it plays everywhere and needs no conversion. Browsers that cannot record
+   it fall back to WebM, which is transcoded to MP3 when the take is saved. */
 function pickMime(MR){
-  var list=["audio/webm;codecs=opus","audio/webm","audio/mp4;codecs=mp4a.40.2","audio/mp4","audio/ogg;codecs=opus"];
+  var list=["audio/mp4;codecs=mp4a.40.2","audio/mp4","audio/aac",
+            "audio/webm;codecs=opus","audio/webm","audio/ogg;codecs=opus"];
   if(!MR || !MR.isTypeSupported) return "";
   for(var i=0;i<list.length;i++) if(MR.isTypeSupported(list[i])) return list[i];
   return "";
+}
+/* True for anything a phone or chat app will not open as-is. */
+function needsConvert(mime){
+  mime=mime||"";
+  return !(mime.indexOf("mp4")>-1 || mime.indexOf("mpeg")>-1 || mime.indexOf("aac")>-1 || mime.indexOf("mp3")>-1);
 }
 function extFor(mime){
   mime=mime||"";
@@ -328,7 +336,7 @@ function levelGain(pcm){
   if(rms<1e-5) return 1;                              // silence stays silent
   var target=count*0.995, acc=0, loud=1;
   for(i=0;i<1024;i++){ acc+=bins[i]; if(acc>=target){ loud=(i+1)/1024; break; } }
-  var g=Math.min(0.97/Math.max(loud,1e-6), 0.10/rms);
+  var g=Math.min(0.97/Math.max(loud,1e-6), 0.125/rms);
   return Math.max(0.25, Math.min(g, 16));
 }
 function softClip(v){
@@ -344,6 +352,24 @@ function toInt16(pcm, gain){
   }
   return out;
 }
+/* Automatic gain control. Returns the next input gain given the level actually arriving
+   at the microphone. A fixed gain cannot work: a quiet phone mic and a loud desk mic are
+   two orders of magnitude apart. Gain rises slowly and ducks quickly, and holds still
+   during silence so the noise floor is never pumped up. */
+function agcGain(current, rms, dt, ceiling){
+  /* The gate has to sit below the quietest microphone that still records speech,
+     otherwise the mics that most need help are the ones that get none. */
+  var TARGET=0.09, GATE=0.0012, MIN=1, MAX=ceiling||40;
+  var cur = (current>0) ? current : 1;
+  if(!(rms>0) || rms<GATE) return cur;                 // silence or a gap between words
+  var want = TARGET/rms;
+  if(want<MIN) want=MIN;
+  if(want>MAX) want=MAX;
+  var tc = (want<cur) ? 0.15 : 1.5;                    // duck fast, lift gently
+  var step = 1-Math.exp(-(dt>0?dt:0.016)/tc);
+  return cur + (want-cur)*step;
+}
+
 function joinBuffers(bufs){
   var total=0,i;
   for(i=0;i<bufs.length;i++) total+=bufs[i].byteLength;
@@ -501,7 +527,8 @@ function recoverDraft(parts){
 return {
   fmt:fmt, short:short, size:size, cleanName:cleanName, fileName:fileName, nextName:nextName,
   pickMime:pickMime, extFor:extFor, joinBuffers:joinBuffers, makeStore:makeStore, recoverDraft:recoverDraft,
-  levelGain:levelGain, softClip:softClip, toInt16:toInt16
+  levelGain:levelGain, softClip:softClip, toInt16:toInt16, needsConvert:needsConvert,
+  agcGain:agcGain
 };
 })();
 /* CORE:END */
@@ -526,30 +553,118 @@ function clearWarn(){ els.warn.classList.remove("show"); }
 /* ---------------- capture ---------------- */
 var MIME=Core.pickMime(window.MediaRecorder), EXT=Core.extFor(MIME);
 var stream=null, recStream=null, rec=null, chunks=[], ac=null, analyser=null, tap=null, buf=null;
-var lift=null, dest=null;
+var lift=null, dest=null, convPct=-1;
+var inMeter=null, inBuf=null, gainNow=1, agc=40, lastTick=0;
 var holding=false, wanted=false, armed=false, bursts=0, elapsed=0, burstAt=0;
 var session=null, seq=0, level=0, hifi=true, saving=false, flashUntil=0;
+
+
+/* ---------------- audio conversion ----------------
+   Shared by the save path (WebM-only browsers) and the export path (older WebM takes). */
+var lameLoading=null;
+function loadEncoder(){
+  if(window.lamejs) return Promise.resolve();
+  if(lameLoading) return lameLoading;
+  lameLoading=new Promise(function(res,rej){
+    var sc=document.createElement("script");
+    sc.src="lame.js";
+    sc.onload=function(){ window.lamejs ? res() : rej(new Error("encoder")); };
+    sc.onerror=function(){ rej(new Error("encoder")); };
+    document.head.appendChild(sc);
+  });
+  return lameLoading;
+}
+function decodeMono(ab){
+  return ctx().decodeAudioData(ab.slice(0)).then(function(audio){
+    var n=audio.length, chans=audio.numberOfChannels, out=new Float32Array(n), k, i;
+    for(k=0;k<chans;k++){
+      var d=audio.getChannelData(k);
+      for(i=0;i<n;i++) out[i]+=d[i]/chans;
+    }
+    return {pcm:out, rate:audio.sampleRate};
+  });
+}
+/* Encodes in slices with a yield between them so the interface stays responsive. */
+function encodeMp3(d, onProgress){
+  var enc=new window.lamejs.Mp3Encoder(1, d.rate, 128);
+  var gain=Core.levelGain(d.pcm), n=d.pcm.length, i=0, parts=[], BLOCK=1152*64;
+  return new Promise(function(res){
+    (function step(){
+      var end=Math.min(i+BLOCK, n);
+      var chunk=enc.encodeBuffer(Core.toInt16(d.pcm.subarray(i,end), gain));
+      if(chunk.length) parts.push(chunk);
+      i=end;
+      if(onProgress) onProgress(i/n);
+      if(i<n) setTimeout(step,0);
+      else{
+        var last=enc.flush();
+        if(last.length) parts.push(last);
+        res(new Blob(parts,{type:"audio/mpeg"}));
+      }
+    })();
+  });
+}
+/* Measures a finished take and reports how far off a normal listening level it is. */
+function measure(ab){
+  return decodeMono(ab).then(function(d){ return {gain:Core.levelGain(d.pcm), d:d}; })
+                       .catch(function(){ return null; });
+}
+
+/* Returns the take in a format phones and chat apps can open, at a sensible level.
+   An m4a needs no format change, but if it still came out quiet it is levelled and
+   re-encoded rather than left too soft to hear. */
+function toPortable(ab, mime, ext, onProgress){
+  if(!Core.needsConvert(mime)){
+    return measure(ab).then(function(m){
+      if(!m || m.gain < 1.6) return {buf:ab, mime:mime, ext:ext};   // already loud enough
+      return loadEncoder()
+        .then(function(){ return encodeMp3(m.d, onProgress); })
+        .then(function(blob){ return blob.arrayBuffer(); })
+        .then(function(out){ return {buf:out, mime:"audio/mpeg", ext:"mp3"}; });
+    });
+  }
+  return loadEncoder()
+    .then(function(){ return decodeMono(ab); })
+    .then(function(d){ return encodeMp3(d, onProgress); })
+    .then(function(blob){ return blob.arrayBuffer(); })
+    .then(function(out){ return {buf:out, mime:"audio/mpeg", ext:"mp3"}; });
+}
 
 function paint(){
   var live=elapsed + (holding ? performance.now()-burstAt : 0);
   els.clock.textContent=Core.fmt(live);
   els.bursts.textContent=bursts+(bursts===1?" burst":" bursts");
-  els.state.textContent = saving ? "SAVING"
+  els.state.textContent = saving ? (convPct>=0 ? "CONVERTING "+convPct+"%" : "SAVING")
     : holding ? "● RECORDING"
     : armed ? "HELD"
     : Date.now()<flashUntil ? "SAVED" : "STANDBY";
   els.led.classList.toggle("on", holding && Math.floor(Date.now()/380)%2===0);
+  if(holding) els.src.textContent="Boost x"+gainNow.toFixed(1);
   els.save.disabled=!armed||live<150||saving;
   els.scrap.disabled=!armed||saving;
   els.ptt.classList.toggle("live", holding);
   els.hifi.disabled=armed;
 }
+function rmsOf(node, into){
+  node.getByteTimeDomainData(into);
+  var sum=0, i, v;
+  for(i=0;i<into.length;i++){ v=(into[i]-128)/128; sum+=v*v; }
+  return Math.sqrt(sum/into.length);
+}
 function loop(){
+  var now=performance.now();
+  var dt=lastTick ? Math.min((now-lastTick)/1000, 0.25) : 0.016;
+  lastTick=now;
+
+  if(inMeter && lift && holding){
+    var inRms=rmsOf(inMeter, inBuf);
+    gainNow=Core.agcGain(gainNow, inRms, dt, agc);
+    if(lift.gain.setTargetAtTime) lift.gain.setTargetAtTime(gainNow, ac.currentTime, 0.08);
+    else lift.gain.value=gainNow;
+  }
+
   if(analyser && holding){
-    analyser.getByteTimeDomainData(buf);
-    var sum=0;
-    for(var i=0;i<buf.length;i++){ var v=(buf[i]-128)/128; sum+=v*v; }
-    level=Math.max(level*0.82, Math.min(1, Math.sqrt(sum/buf.length)*3.4));
+    level=Math.max(level*0.82, Math.min(1, rmsOf(analyser, buf)*3.4));
   } else level*=0.88;
   var deg=-52+level*104+(holding?(Math.random()-0.5)*3:0);
   els.needle.style.transform="rotate("+deg.toFixed(1)+"deg)";
@@ -582,7 +697,7 @@ function dropStream(){
   if(stream){ stream.getTracks().forEach(function(t){ try{t.stop();}catch(e){} }); stream=null; }
   if(tap){ try{tap.disconnect();}catch(e){} tap=null; }
   if(lift){ try{lift.disconnect();}catch(e){} lift=null; }
-  analyser=null; dest=null; recStream=null;
+  analyser=null; inMeter=null; dest=null; recStream=null; gainNow=1;
 }
 function openMic(){
   if(stream) return Promise.resolve(true);
@@ -602,14 +717,31 @@ function openMic(){
        Record through a lift-and-limit chain so the saved file is at a usable level. */
     tap=c.createMediaStreamSource(s);
     var hp=c.createBiquadFilter(); hp.type="highpass"; hp.frequency.value=75;   // room rumble
-    lift=c.createGain(); lift.gain.value=hifi?3.2:1.6;
-    var lim=c.createDynamicsCompressor();
-    lim.threshold.value=-8; lim.knee.value=6; lim.ratio.value=12;
-    lim.attack.value=0.003; lim.release.value=0.18;
+    /* Input meter sits before the gain, so the AGC measures the microphone itself
+       rather than its own output, which keeps the loop stable. */
+    inMeter=c.createAnalyser(); inMeter.fftSize=1024; inBuf=new Uint8Array(inMeter.fftSize);
+
+    lift=c.createGain(); lift.gain.value=1;
+    agc = hifi ? 40 : 12;                        // the OS already boosts in voice mode
+    gainNow = 1;
+
+    var comp=c.createDynamicsCompressor();       // evens out loud and soft passages
+    comp.threshold.value=-22; comp.knee.value=12; comp.ratio.value=3;
+    comp.attack.value=0.006; comp.release.value=0.25;
+
+    var makeup=c.createGain(); makeup.gain.value=2.2;
+
+    var lim=c.createDynamicsCompressor();        // brick wall just under full scale
+    lim.threshold.value=-1.5; lim.knee.value=0; lim.ratio.value=20;
+    lim.attack.value=0.001; lim.release.value=0.08;
+
     dest=c.createMediaStreamDestination();
     analyser=c.createAnalyser(); analyser.fftSize=1024; buf=new Uint8Array(analyser.fftSize);
-    tap.connect(hp); hp.connect(lift); lift.connect(lim); lim.connect(dest);
-    lim.connect(analyser);                       // meter shows the level actually being written
+
+    tap.connect(hp); hp.connect(inMeter);
+    hp.connect(lift); lift.connect(comp); comp.connect(makeup);
+    makeup.connect(lim); lim.connect(dest);
+    lim.connect(analyser);                       // meter shows the level being written
     recStream=dest.stream;
     var set=s.getAudioTracks()[0].getSettings ? s.getAudioTracks()[0].getSettings() : {};
     els.src.textContent=(set.sampleRate?Math.round(set.sampleRate/1000)+" kHz":"Mic live")+(hifi?" hi-fi":" voice");
@@ -681,25 +813,27 @@ function finish(keep){
     var parts=chunks.slice();
     rec=null; chunks=[];
     if(!keep||!parts.length){
-      elapsed=0; bursts=0; armed=false; saving=false; session=null;
+      elapsed=0; bursts=0; armed=false; saving=false; convPct=-1; session=null;
       store.clearParts(sess); paint(); return;
     }
     new Blob(parts,{type:MIME}).arrayBuffer().then(function(ab){
+      return toPortable(ab, MIME, EXT, function(p){ convPct=Math.round(p*100); paint(); });
+    }).then(function(file){
       return store.all().then(function(all){
         return store.put({
           id:Date.now().toString(36)+"-"+Math.random().toString(36).slice(2,7),
-          name:Core.nextName(all), buf:ab, mime:MIME, ext:EXT,
+          name:Core.nextName(all), buf:file.buf, mime:file.mime, ext:file.ext,
           ms:took, bursts:count, at:Date.now(), trashed:false
         });
       });
     }).then(function(){
       return store.clearParts(sess);
     }).then(function(){
-      elapsed=0; bursts=0; armed=false; saving=false; session=null;
+      elapsed=0; bursts=0; armed=false; saving=false; convPct=-1; session=null;
       flashUntil=Date.now()+2200;
       view="takes"; syncTabs(); render(); paint();
     }).catch(function(e){
-      saving=false; paint();
+      saving=false; convPct=-1; paint();
       warn(e&&e.code==="QUOTA"
         ? "Device storage is full. Delete some takes, then hit Save take again. Your audio is still held."
         : "Saving failed, so the take was kept in the recorder. Try Save take again.");
@@ -818,7 +952,9 @@ function rowFor(it){
   t1.appendChild(nm); t1.appendChild(dur);
 
   var meta=document.createElement("div"); meta.className="meta";
-  meta.textContent=stamp(it.at)+" · "+it.bursts+(it.bursts===1?" burst":" bursts")+" · "+Core.size(it.buf?it.buf.byteLength:0);
+  meta.textContent=stamp(it.at)+" · "+it.bursts+(it.bursts===1?" burst":" bursts")+
+    " · "+Core.size(it.buf?it.buf.byteLength:0)+" · "+String(it.ext||"webm").toUpperCase()+
+    (Core.needsConvert(it.mime)?" (converts on export)":"");
 
   var seek=document.createElement("div"); seek.className="seek";
   var fill=document.createElement("i"); seek.appendChild(fill);
@@ -915,64 +1051,33 @@ els.player.addEventListener("timeupdate", function(){
 });
 
 /* ---------------- export ----------------
-   Browsers record WebM/Opus, which most phones, chat apps and audio players will not
-   open. Recordings are kept in the recorded format so saving stays instant, then
-   converted to MP3 the first time a take is shared or downloaded. */
-var lameLoading=null, exportCache={};
+   Takes are recorded as m4a wherever the browser allows it, so no conversion is needed.
+   Browsers that can only produce WebM get one MP3 pass at save time. Older takes already
+   sitting in the library as WebM are converted the first time they are shared. */
+var exportCache={};
 
-function loadEncoder(){
-  if(window.lamejs) return Promise.resolve();
-  if(lameLoading) return lameLoading;
-  lameLoading=new Promise(function(res,rej){
-    var sc=document.createElement("script");
-    sc.src="lame.js";
-    sc.onload=function(){ window.lamejs ? res() : rej(new Error("encoder")); };
-    sc.onerror=function(){ rej(new Error("encoder")); };
-    document.head.appendChild(sc);
-  });
-  return lameLoading;
-}
 
-function decodeMono(ab){
-  return ctx().decodeAudioData(ab.slice(0)).then(function(audio){
-    var n=audio.length, chans=audio.numberOfChannels, out=new Float32Array(n), k, i;
-    for(k=0;k<chans;k++){
-      var d=audio.getChannelData(k);
-      for(i=0;i<n;i++) out[i]+=d[i]/chans;
-    }
-    return {pcm:out, rate:audio.sampleRate};
-  });
-}
 
 /* Encodes in slices with a yield between them so the interface stays responsive. */
-function encodeMp3(d, onProgress){
-  var enc=new window.lamejs.Mp3Encoder(1, d.rate, 128);
-  var gain=Core.levelGain(d.pcm), n=d.pcm.length, i=0, parts=[], BLOCK=1152*64;
-  return new Promise(function(res){
-    (function step(){
-      var end=Math.min(i+BLOCK, n);
-      var chunk=enc.encodeBuffer(Core.toInt16(d.pcm.subarray(i,end), gain));
-      if(chunk.length) parts.push(chunk);
-      i=end;
-      if(onProgress) onProgress(i/n);
-      if(i<n) setTimeout(step,0);
-      else{
-        var last=enc.flush();
-        if(last.length) parts.push(last);
-        res(new Blob(parts,{type:"audio/mpeg"}));
-      }
-    })();
-  });
-}
 
 /* Returns a file every phone and chat app can actually open. */
 function exportFile(it, onProgress){
   if(exportCache[it.id]) return Promise.resolve(exportCache[it.id]);
-  var mime=it.mime||"";
-  if(mime.indexOf("mp4")>-1||mime.indexOf("mpeg")>-1||mime.indexOf("aac")>-1){
-    var asis={blob:blobOf(it), name:Core.fileName(it)};      // already universally playable
-    exportCache[it.id]=asis;
-    return Promise.resolve(asis);
+  if(!Core.needsConvert(it.mime)){
+    return measure(it.buf).then(function(m){
+      if(!m || m.gain < 1.6){
+        var asis={blob:blobOf(it), name:Core.fileName(it)};   // portable and loud enough
+        exportCache[it.id]=asis;
+        return asis;
+      }
+      return loadEncoder()
+        .then(function(){ return encodeMp3(m.d, onProgress); })
+        .then(function(blob){
+          var out={blob:blob, name:Core.fileName(it,"mp3")};
+          exportCache[it.id]=out;
+          return out;
+        });
+    });
   }
   return loadEncoder()
     .then(function(){ return decodeMono(it.buf); })
@@ -1058,15 +1163,23 @@ store.open().then(function(r){
   var keep=document.createElement("button"); keep.textContent="Recover it";
   var drop=document.createElement("button"); drop.textContent="Discard";
   keep.addEventListener("click", function(){
-    store.all().then(function(all){
-      return store.put({
-        id:Date.now().toString(36)+"-r", name:Core.nextName(all), buf:draft.buf, mime:draft.mime,
-        ext:draft.ext, ms:draft.ms, bursts:draft.bursts, at:draft.at, trashed:false
+    keep.disabled=true; drop.disabled=true; keep.textContent="Recovering";
+    toPortable(draft.buf, draft.mime, draft.ext, function(pr){
+      keep.textContent="Recovering "+Math.round(pr*100)+"%";
+    }).then(function(file){
+      return store.all().then(function(all){
+        return store.put({
+          id:Date.now().toString(36)+"-r", name:Core.nextName(all), buf:file.buf, mime:file.mime,
+          ext:file.ext, ms:draft.ms, bursts:draft.bursts, at:draft.at, trashed:false
+        });
       });
     }).then(function(){
       return store.clearParts(draft.session);
     }).then(function(){ els.recover.classList.remove("show"); render(); })
-      .catch(function(){ warn("The recovered take could not be saved."); });
+      .catch(function(){
+        keep.disabled=false; drop.disabled=false; keep.textContent="Recover it";
+        warn("The recovered take could not be saved.");
+      });
   });
   drop.addEventListener("click", function(){
     store.clearParts(draft.session).then(function(){ els.recover.classList.remove("show"); });
