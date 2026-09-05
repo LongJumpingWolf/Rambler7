@@ -98,6 +98,16 @@ ok("the control is a switch on the device, not faint text in a corner",
 ok("it is labelled in plain words", /id="flip">.*?<span>Recorder at bottom<\/span>/.test(html));
 ok("it uses the same switch styling as the hi-fi control", /\.sw i\{width:38px/.test(css));
 ok("the switch row wraps rather than squashing on a narrow phone", /\.strip\{[\s\S]*?flex-wrap:wrap/.test(css));
+
+group("Safe area and installed-app spacing");
+ok("the top inset is reserved for the status bar and Dynamic Island", /padding-top:calc\(.*env\(safe-area-inset-top/.test(css));
+ok("side insets are reserved for landscape notches", /padding-left:calc\(.*env\(safe-area-inset-left/.test(css) && /padding-right:calc\(.*env\(safe-area-inset-right/.test(css));
+ok("the bottom inset is reserved for the home indicator", /padding-bottom:calc\(.*env\(safe-area-inset-bottom/.test(css));
+ok("an installed app gets extra room at the top", /@media \(display-mode:standalone\),\(display-mode:fullscreen\)/.test(css));
+ok("iOS standalone gets more still", /@supports \(-webkit-touch-callout:none\)[\s\S]*?display-mode:standalone/.test(css));
+ok("the viewport is set to cover the whole screen", /viewport-fit=cover/.test(html));
+ok("nothing sits above the app with a fixed top offset that would ignore the inset",
+   !/position:fixed;top:0/.test(css));
 console.log("\n" + "=".repeat(52));
 console.log((fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
 if (fail) { console.log("failed:\n - " + fails.join("\n - ")); process.exit(1); }
