@@ -17,7 +17,7 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
 /* ---- fake capture stack ---------------------------------------------- */
 function makeEnv(opts = {}) {
   const idb = opts.idb === null ? null : (opts.idb || new IDBFactory());
-  const state = { destStreams: 0, decoded: 0, encodedSamples: 0, encoder: null, granted: opts.granted !== false, chunkBytes: 4000, tracksStopped: 0, recorders: [], downloads: [], shared: [], vibrations: [] };
+  const state = { loads: [], plays: 0, pauses: 0, revoked: [], gains: [], destStreams: 0, decoded: 0, encodedSamples: 0, encoder: null, granted: opts.granted !== false, chunkBytes: 4000, tracksStopped: 0, recorders: [], downloads: [], shared: [], vibrations: [] };
 
   class FakeMediaRecorder {
     constructor(stream, cfg) {
@@ -37,7 +37,11 @@ function makeEnv(opts = {}) {
     stop() { this.state = "inactive"; setTimeout(() => this.onstop && this.onstop(), 0); }
   }
 
+  const vc = new (require("jsdom").VirtualConsole)();
+  vc.on("jsdomError", err => { if (process.env.SHOW_ERR) console.log("  \x1b[35m[page error]\x1b[0m " + (err.detail || err.message)); });
+  vc.on("error", (...a) => { if (process.env.SHOW_ERR) console.log("  \x1b[35m[console.error]\x1b[0m", ...a); });
   const dom = new JSDOM(HTML, {
+    virtualConsole: vc,
     runScripts: "dangerously",
     pretendToBeVisual: true,
     url: "https://local.test/",
@@ -47,14 +51,28 @@ function makeEnv(opts = {}) {
       w.MediaRecorder = FakeMediaRecorder;
       const node = () => ({ connect() {}, disconnect() {} });
       w.AudioContext = class {
-        constructor() { this.state = "running"; this.sampleRate = 48000; }
+        constructor() { this.state = "running"; this.sampleRate = 48000; this.currentTime = 0; }
         resume() {}
-        createAnalyser() { return Object.assign(node(), { fftSize: 1024, getByteTimeDomainData(a) { a.fill(128); } }); }
+        createAnalyser() {
+          return Object.assign(node(), {
+            fftSize: 1024,
+            getByteTimeDomainData(a) {
+              const amp = (opts.micLevel === undefined ? 0.01 : opts.micLevel) * 128;
+              for (let i = 0; i < a.length; i++) a[i] = 128 + Math.round(Math.sin(i / 7) * amp);
+            }
+          });
+        }
         createMediaStreamSource() { return node(); }
         createBuffer(c, n) { return { getChannelData: () => new Float32Array(n) }; }
         createBufferSource() { return Object.assign(node(), { start() {} }); }
         createBiquadFilter() { return Object.assign(node(), { type: "", frequency: { value: 0 }, Q: { value: 0 } }); }
-        createGain() { return Object.assign(node(), { gain: { value: 1 } }); }
+        createGain() {
+          const g = Object.assign(node(), {
+            gain: { value: 1, setTargetAtTime(v) { this.value = v; } }
+          });
+          state.gains.push(g);
+          return g;
+        }
         createDynamicsCompressor() {
           return Object.assign(node(), { threshold: {}, knee: {}, ratio: {}, attack: {}, release: {} });
         }
@@ -67,7 +85,7 @@ function makeEnv(opts = {}) {
           state.decoded++;
           return Promise.resolve({
             length: n, numberOfChannels: 1, sampleRate: 48000,
-            getChannelData: () => { const f = new Float32Array(n); for (let i = 0; i < n; i++) f[i] = Math.sin(i / 20) * 0.02; return f; }
+            getChannelData: () => { const amp = opts.decodedLevel === undefined ? 0.25 : opts.decodedLevel; const f = new Float32Array(n); for (let i = 0; i < n; i++) f[i] = Math.sin(i / 20) * amp; return f; }
           });
         }
       };
@@ -88,9 +106,31 @@ function makeEnv(opts = {}) {
       };
       w.navigator.vibrate = ms => { state.vibrations.push(ms); return true; };
       w.navigator.storage = { persist: () => Promise.resolve(true) };
-      w.URL.createObjectURL = () => "blob:fake"; w.URL.revokeObjectURL = () => {};
-      w.HTMLMediaElement.prototype.play = function () { return Promise.resolve(); };
-      w.HTMLMediaElement.prototype.pause = function () {};
+      let urlN = 0;
+      w.URL.createObjectURL = () => "blob:fake" + (++urlN);
+      w.URL.revokeObjectURL = u => state.revoked.push(u);
+      // a media element with enough behaviour to test the transport
+      Object.defineProperty(w.HTMLMediaElement.prototype, "duration", {
+        configurable: true, get() { return this.__dur === undefined ? 12 : this.__dur; }
+      });
+      Object.defineProperty(w.HTMLMediaElement.prototype, "paused", {
+        configurable: true, get() { return this.__paused !== false; }
+      });
+      Object.defineProperty(w.HTMLMediaElement.prototype, "currentTime", {
+        configurable: true,
+        get() { return this.__t || 0; },
+        set(v) { this.__t = Math.max(0, Math.min(v, this.duration)); }
+      });
+      w.HTMLMediaElement.prototype.load = function () {
+        state.loads.push(this.src);
+        this.__t = 0;
+        const el = this;
+        setTimeout(() => { if (el.onloadedmetadata) el.onloadedmetadata(); if (el.oncanplay) el.oncanplay(); }, 5);
+      };
+      w.HTMLMediaElement.prototype.play = function () {
+        this.__paused = false; state.plays++; return Promise.resolve();
+      };
+      w.HTMLMediaElement.prototype.pause = function () { this.__paused = true; state.pauses++; };
       w.HTMLElement.prototype.setPointerCapture = function () {};
       const click = w.HTMLElement.prototype.click;
       w.HTMLAnchorElement.prototype.click = function () { state.downloads.push(this.getAttribute("download")); };
@@ -297,7 +337,10 @@ group("Scrapping a take");
 e = makeEnv(); await wait(80);
 e.fire(e.$("#ptt"), "pointerdown"); await wait(180);
 e.fire(e.$("#ptt"), "pointerup"); await wait(20);
-e.fire(e.$("#scrap"), "click"); await wait(120);
+e.fire(e.$("#scrap"), "click"); await wait(40);
+eq("one tap only arms the scrap, it does not throw the take away", e.$("#scrap").textContent, "TAP TO CONFIRM");
+eq("the take is still held", e.$("#state").textContent, "HELD");
+e.fire(e.$("#scrap"), "click"); await wait(150);
 eq("scrapped audio is not saved", rows(e).length, 0);
 eq("recorder returns to standby", e.$("#state").textContent, "STANDBY");
 eq("clock resets", e.$("#clock").textContent, "00:00.0");
@@ -576,14 +619,15 @@ e.fire(e.$("#save"), "click"); await wait(250);
 {
   const all = await new Promise(res => { const r = e.w.indexedDB.open("rambler7"); r.onsuccess = () => { const g = r.result.transaction("takes").objectStore("takes").getAll(); g.onsuccess = () => res(g.result); }; });
   eq("the take is stored as m4a", all[0].ext, "m4a");
-  eq("no transcode happened at save", e.state.decoded, 0);
+  eq("it was measured for level", e.state.decoded > 0, true);
+  eq("but not re-encoded, since it was already loud enough", e.state.encodedSamples, 0);
   eq("every recorded byte is preserved untouched", all[0].buf.byteLength, rawBytes);
 }
 eq("the row shows the format", rows(e)[0].querySelector(".meta").textContent.indexOf("M4A") > -1, true);
 ok("and is not flagged for conversion", rows(e)[0].querySelector(".meta").textContent.indexOf("converts on export") === -1);
-clickBtn(e, rows(e)[0], "DOWNLOAD"); await wait(300);
+clickBtn(e, rows(e)[0], "DOWNLOAD"); await wait(400);
 eq("download hands over the m4a as-is", e.state.downloads[0], "Take_001.m4a");
-eq("still no conversion needed", e.state.decoded, 0);
+eq("with no re-encoding at any point", e.state.encodedSamples, 0);
 e.dom.window.close();
 
 group("Recordings already stuck in the app as WebM");
@@ -604,7 +648,8 @@ group("Recordings already stuck in the app as WebM");
         mime: "audio/webm;codecs=opus", ext: "webm", ms: 9000, bursts: 2,
         at: Date.now() - 86400000, trashed: false
       });
-      tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+      tx.oncomplete = () => { r.result.close(); res(); };   // release it, or the upgrade is blocked
+      tx.onerror = () => rej(tx.error);
     };
     r.onerror = () => rej(r.error);
   });
@@ -638,6 +683,338 @@ group("Recordings already stuck in the app as WebM");
   eq("and trashed", rows(e).length, 0);
   e.dom.window.close();
 }
+
+
+/* ================================================================== */
+group("Automatic gain while recording");
+e = makeEnv({ micLevel: 0.006 });          // a quiet phone microphone
+await wait(80);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(700);
+{
+  const agcGain = e.state.gains.find(g => g.gain.value > 1.05);
+  ok("a quiet microphone is boosted while recording", !!agcGain,
+     "gains seen: " + e.state.gains.map(g => g.gain.value.toFixed(2)).join(", "));
+  ok("the working boost is shown on the display", /Boost x/.test(e.$("#src").textContent), e.$("#src").textContent);
+}
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+e.dom.window.close();
+
+e = makeEnv({ micLevel: 0.25 });           // a healthy signal needs no help
+await wait(80);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(500);
+ok("a healthy microphone is not boosted much", e.state.gains.every(g => g.gain.value < 3),
+   e.state.gains.map(g => g.gain.value.toFixed(2)).join(", "));
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+e.dom.window.close();
+
+group("A quiet m4a take is levelled rather than left soft");
+e = makeEnv({ formats: "mp4", decodedLevel: 0.008 }); await wait(80);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+e.fire(e.$("#save"), "click"); await wait(400);
+{
+  const all = await new Promise(res => { const r = e.w.indexedDB.open("rambler7"); r.onsuccess = () => { const g = r.result.transaction("takes").objectStore("takes").getAll(); g.onsuccess = () => res(g.result); }; });
+  ok("the finished take was measured", e.state.decoded > 0);
+  ok("a take that came out quiet is levelled on the way in", all[0].ext === "mp3",
+     "stored as " + all[0].ext);
+  ok("it still holds audio", all[0].buf.byteLength > 0);
+}
+e.dom.window.close();
+
+
+/* ================================================================== */
+group("Microphone is released when idle");
+e = makeEnv(); await wait(80);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+eq("the microphone stays open between bursts", e.state.tracksStopped, 0);
+e.fire(e.$("#save"), "click"); await wait(300);
+ok("it is released once the take is saved", e.state.tracksStopped > 0,
+   "tracks stopped: " + e.state.tracksStopped);
+eq("the display invites a new take", e.$("#src").textContent, "Hold to open mic");
+{
+  const stoppedBefore = e.state.tracksStopped;
+  e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+  ok("holding again reopens it", e.$("#state").textContent === "\u25cf RECORDING");
+  e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+  e.fire(e.$("#save"), "click"); await wait(300);
+  ok("and it is released again", e.state.tracksStopped > stoppedBefore);
+}
+clickBtn(e, rows(e)[0], "PLAY"); await wait(80);
+eq("playback sets full volume", e.$("#player").volume, 1);
+e.dom.window.close();
+
+group("Undoing a burst");
+e = makeEnv(); await wait(80);
+ok("nothing to undo before recording", e.$("#undo").disabled === true);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+ok("undo is unavailable while the button is held", e.$("#undo").disabled === true);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+ok("undo becomes available once released", e.$("#undo").disabled === false);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+eq("three bursts recorded", e.$("#bursts").textContent, "3 bursts");
+const clockAt3 = e.$("#clock").textContent;
+e.fire(e.$("#undo"), "click"); await wait(60);
+eq("undo removes the last burst", e.$("#bursts").textContent, "2 bursts");
+ok("and rolls the clock back", e.$("#clock").textContent < clockAt3, clockAt3 + " → " + e.$("#clock").textContent);
+ok("the take is still held, not ended", e.$("#state").textContent === "HELD");
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+eq("recording can continue after an undo", e.$("#bursts").textContent, "3 bursts");
+e.fire(e.$("#save"), "click"); await wait(300);
+eq("the shortened take saves", rows(e).length, 1);
+e.dom.window.close();
+
+group("Undoing every burst ends the take");
+e = makeEnv(); await wait(80);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+e.fire(e.$("#undo"), "click"); await wait(80);
+eq("the recorder returns to standby", e.$("#state").textContent, "STANDBY");
+eq("the clock resets", e.$("#clock").textContent, "00:00.0");
+eq("there is nothing to save", e.$("#save").disabled, true);
+eq("and nothing to undo", e.$("#undo").disabled, true);
+{
+  const parts = await new Promise(res => { const r = e.w.indexedDB.open("rambler7"); r.onsuccess = () => { const g = r.result.transaction("parts").objectStore("parts").getAll(); g.onsuccess = () => res(g.result); }; });
+  eq("the crash backup is cleared, so it cannot come back", parts.length, 0);
+}
+eq("no take was saved", rows(e).length, 0);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+eq("a fresh take can be started", e.$("#bursts").textContent, "1 burst");
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+e.dom.window.close();
+
+group("Scrapping asks first");
+e = makeEnv(); await wait(80);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+e.fire(e.$("#scrap"), "click"); await wait(40);
+eq("the button asks for confirmation", e.$("#scrap").textContent, "TAP TO CONFIRM");
+ok("and is visibly armed", e.$("#scrap").classList.contains("arm"));
+ok("the audio is untouched", e.$("#bursts").textContent === "1 burst");
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+eq("recording again cancels the question", e.$("#scrap").textContent, "SCRAP TAKE");
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+eq("and the take survived", e.$("#bursts").textContent, "2 bursts");
+e.fire(e.$("#scrap"), "click"); await wait(40);
+e.fire(e.$("#scrap"), "click"); await wait(200);
+eq("confirming does scrap it", e.$("#state").textContent, "STANDBY");
+eq("nothing was saved", rows(e).length, 0);
+eq("and the button is back to normal", e.$("#scrap").textContent, "SCRAP TAKE");
+e.dom.window.close();
+
+group("Progress bar");
+e = makeEnv(); await wait(80);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(300);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+e.fire(e.$("#save"), "click"); await wait(300);
+{
+  const row = rows(e)[0];
+  ok("the bar has a fill and a handle", !!row.querySelector(".seek i") && !!row.querySelector(".seek b"));
+  ok("elapsed and total times are shown", !!row.querySelector(".times"));
+  eq("total time is filled in", row.querySelectorAll(".times span")[1].textContent.length > 0, true);
+  ok("the bar is not highlighted while stopped", !row.querySelector(".seek").classList.contains("live"));
+  clickBtn(e, row, "PLAY"); await wait(100);
+  ok("it lights up during playback", rows(e)[0].querySelector(".seek").classList.contains("live"));
+  const seek = rows(e)[0].querySelector(".seek");
+  seek.getBoundingClientRect = () => ({ left: 0, width: 200, top: 0, height: 10 });
+  seek.dispatchEvent(new e.w.MouseEvent("pointerdown", { clientX: 100, bubbles: true, cancelable: true }));
+  await wait(60);
+  ok("dragging moves the fill", parseFloat(rows(e)[0].querySelector(".seek i").style.width) > 0,
+     rows(e)[0].querySelector(".seek i").style.width);
+  ok("and moves the handle with it", parseFloat(rows(e)[0].querySelector(".seek b").style.left) > 0);
+  seek.dispatchEvent(new e.w.MouseEvent("pointermove", { clientX: 160, bubbles: true, cancelable: true }));
+  await wait(40);
+  ok("the fill follows the finger", parseFloat(rows(e)[0].querySelector(".seek i").style.width) > 40);
+  seek.dispatchEvent(new e.w.MouseEvent("pointerup", { clientX: 160, bubbles: true, cancelable: true }));
+  await wait(40);
+  clickBtn(e, rows(e)[0], "STOP"); await wait(60);
+  eq("stopping resets the bar", rows(e)[0].querySelector(".seek i").style.width, "0%");
+  eq("and the elapsed readout", rows(e)[0].querySelectorAll(".times span")[0].textContent, "0:00");
+}
+e.dom.window.close();
+
+
+/* ================================================================== */
+group("Starting a second take while one is playing");
+e = makeEnv(); await wait(80);
+for (let k = 0; k < 3; k++) {
+  e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+  e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+  e.fire(e.$("#save"), "click"); await wait(300);
+}
+eq("three takes to work with", rows(e).length, 3);
+
+clickBtn(e, rows(e)[0], "PLAY"); await wait(60);
+const firstSrc = e.$("#player").src;
+ok("the first take is playing", e.state.plays === 1 && !e.$("#player").paused);
+
+const pausesBefore = e.state.pauses;
+clickBtn(e, rows(e)[1], "PLAY"); await wait(80);
+ok("the outgoing take is paused before the source is swapped", e.state.pauses > pausesBefore);
+ok("the second take actually starts", e.state.plays === 2 && !e.$("#player").paused);
+ok("it loaded a different source", e.$("#player").src !== firstSrc, e.$("#player").src);
+ok("the first take's source was not revoked while it was still playing",
+   e.state.revoked.indexOf(firstSrc.replace(/^.*\//, "")) === -1 || e.state.revoked.length === 0);
+eq("only the second row shows stop", rows(e).map(r => r.querySelector(".acts button").textContent).join(","), "PLAY,STOP,PLAY");
+eq("the first row's bar was reset", rows(e)[0].querySelector(".seek i").style.width, "0%");
+
+clickBtn(e, rows(e)[2], "PLAY"); await wait(80);
+ok("a third take starts cleanly too", e.state.plays === 3 && !e.$("#player").paused);
+clickBtn(e, rows(e)[0], "PLAY"); await wait(80);
+ok("and going back to the first still works", e.state.plays === 4 && !e.$("#player").paused);
+eq("still only one row shows stop", rows(e).map(r => r.querySelector(".acts button").textContent).join(","), "STOP,PLAY,PLAY");
+
+// rapid switching must not wedge anything
+for (let k = 0; k < 6; k++) {
+  e.fire(rows(e)[k % 3].querySelector(".acts button"), "click");   // whatever it currently reads
+  await wait(30);
+}
+await wait(120);
+ok("hammering between takes leaves exactly one playing",
+   rows(e).map(r => r.querySelector(".acts button").textContent).filter(t => t === "STOP").length <= 1);
+e.dom.window.close();
+
+group("The progress bar always moves while audio plays");
+e = makeEnv(); await wait(80);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(300);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+e.fire(e.$("#save"), "click"); await wait(300);
+clickBtn(e, rows(e)[0], "PLAY"); await wait(60);
+{
+  const p = e.$("#player");
+  const bar = () => parseFloat(rows(e)[0].querySelector(".seek i").style.width) || 0;
+  p.currentTime = 3; await wait(120);
+  ok("the fill tracks playback position", bar() > 15, "width " + bar());
+  ok("the elapsed time updates", rows(e)[0].querySelectorAll(".times span")[0].textContent !== "0:00");
+  p.currentTime = 9; await wait(120);
+  ok("and keeps tracking", bar() > 60, "width " + bar());
+
+  // an interrupted drag used to leave the bar frozen for the rest of the session
+  const seek = rows(e)[0].querySelector(".seek");
+  seek.getBoundingClientRect = () => ({ left: 0, width: 200, top: 0, height: 10 });
+  seek.dispatchEvent(new e.w.MouseEvent("pointerdown", { clientX: 50, bubbles: true, cancelable: true }));
+  await wait(40);
+  e.d.dispatchEvent(new e.w.MouseEvent("pointerup", { clientX: 50, bubbles: true, cancelable: true }));
+  await wait(40);
+  p.currentTime = 11; await wait(120);
+  ok("the bar resumes after a drag ends off the bar", bar() > 80, "width " + bar());
+
+  // a drag interrupted by a re-render must not freeze it either
+  seek.dispatchEvent(new e.w.MouseEvent("pointerdown", { clientX: 100, bubbles: true, cancelable: true }));
+  await wait(30);
+  clickBtn(e, rows(e)[0], "RENAME"); await wait(40);
+  const inp2 = rows(e)[0].querySelector(".nm input");
+  inp2.dispatchEvent(new e.w.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  await wait(80);
+  p.currentTime = 6; await wait(150);
+  ok("a re-render during a drag does not freeze the bar", parseFloat(rows(e)[0].querySelector(".seek i").style.width) > 30,
+     "width " + rows(e)[0].querySelector(".seek i").style.width);
+}
+e.dom.window.close();
+
+group("Dragging the progress bar");
+e = makeEnv(); await wait(80);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(300);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+e.fire(e.$("#save"), "click"); await wait(300);
+{
+  const seek = () => rows(e)[0].querySelector(".seek");
+  seek().getBoundingClientRect = () => ({ left: 0, width: 200, top: 0, height: 10 });
+  const p = e.$("#player");
+
+  // dragging on a stopped take starts it at that point
+  seek().dispatchEvent(new e.w.MouseEvent("pointerdown", { clientX: 100, bubbles: true, cancelable: true }));
+  await wait(80);
+  ok("dragging a stopped take starts playback", !p.paused);
+  ok("and starts it where you pressed", Math.abs(p.currentTime - 6) < 1.5, "at " + p.currentTime);
+
+  // the drag continues even when the finger leaves the bar
+  const s2 = rows(e)[0].querySelector(".seek");
+  s2.getBoundingClientRect = () => ({ left: 0, width: 200, top: 0, height: 10 });
+  s2.dispatchEvent(new e.w.MouseEvent("pointerdown", { clientX: 20, bubbles: true, cancelable: true }));
+  await wait(30);
+  e.d.dispatchEvent(new e.w.MouseEvent("pointermove", { clientX: 150, bubbles: true, cancelable: true }));
+  await wait(40);
+  ok("the position follows a move outside the bar", Math.abs(p.currentTime - 9) < 1.5, "at " + p.currentTime);
+  e.d.dispatchEvent(new e.w.MouseEvent("pointermove", { clientX: 400, bubbles: true, cancelable: true }));
+  await wait(40);
+  ok("dragging past the end clamps to the end", p.currentTime <= p.duration, "at " + p.currentTime);
+  e.d.dispatchEvent(new e.w.MouseEvent("pointermove", { clientX: -80, bubbles: true, cancelable: true }));
+  await wait(40);
+  ok("and past the start clamps to zero", p.currentTime >= 0 && p.currentTime < 1, "at " + p.currentTime);
+  e.d.dispatchEvent(new e.w.MouseEvent("pointerup", { clientX: -80, bubbles: true, cancelable: true }));
+  await wait(40);
+
+  // keyboard
+  const s3 = rows(e)[0].querySelector(".seek");
+  eq("the bar reports itself as a slider", s3.getAttribute("role"), "slider");
+  ok("with a live position for screen readers", s3.getAttribute("aria-valuenow") !== null);
+  p.currentTime = 4;
+  s3.dispatchEvent(new e.w.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }));
+  await wait(40);
+  ok("arrow keys nudge the position", p.currentTime > 4, "at " + p.currentTime);
+  s3.dispatchEvent(new e.w.KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }));
+  await wait(40);
+  ok("and back the other way", p.currentTime < 9.1, "at " + p.currentTime);
+}
+e.dom.window.close();
+
+
+/* ================================================================== */
+group("Choosing where the recorder sits");
+e = makeEnv(); await wait(120);
+eq("the recorder is on top by default", e.$(".app").classList.contains("flip"), false);
+eq("the control is a switch, like the hi-fi one beside it", e.$("#flip").type, "checkbox");
+ok("it sits with the other switches on the device", !!e.$(".strip #flip"));
+ok("it has a visible label", e.$("#flip").parentNode.textContent.trim().length > 3,
+   e.$("#flip").parentNode.textContent);
+eq("and starts off", e.$("#flip").checked, false);
+
+const flipIt = () => { e.$("#flip").checked = !e.$("#flip").checked; e.$("#flip").dispatchEvent(new e.w.Event("change", { bubbles: true })); };
+flipIt(); await wait(80);
+ok("switching it moves the recorder below the library", e.$(".app").classList.contains("flip"));
+flipIt(); await wait(80);
+eq("switching back puts it on top", e.$(".app").classList.contains("flip"), false);
+flipIt(); await wait(120);
+
+// recording must work in either arrangement
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+eq("recording works with the recorder below", e.$("#state").textContent, "\u25cf RECORDING");
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+e.fire(e.$("#save"), "click"); await wait(300);
+eq("and saving works", rows(e).length, 1);
+ok("the layout is still flipped afterwards", e.$(".app").classList.contains("flip"));
+const layoutIdb = e.idb;
+e.dom.window.close();
+
+{
+  const back = makeEnv({ idb: layoutIdb }); await wait(150);
+  ok("the choice is remembered on the next visit", back.$(".app").classList.contains("flip"));
+  eq("and the switch shows it as on", back.$("#flip").checked, true);
+  eq("takes are still there too", rows(back).length, 1);
+  back.$("#flip").checked = false;
+  back.$("#flip").dispatchEvent(new back.w.Event("change", { bubbles: true }));
+  await wait(80);
+  const idb2 = back.idb;
+  back.dom.window.close();
+
+  const third = makeEnv({ idb: idb2 }); await wait(150);
+  eq("switching back is remembered as well", third.$(".app").classList.contains("flip"), false);
+  third.dom.window.close();
+}
+
+group("Layout choice without storage");
+e = makeEnv({ idb: null }); await wait(150);
+eq("it defaults to the recorder on top", e.$(".app").classList.contains("flip"), false);
+e.$("#flip").checked = true;
+e.$("#flip").dispatchEvent(new e.w.Event("change", { bubbles: true }));
+await wait(60);
+ok("and can still be switched for the session", e.$(".app").classList.contains("flip"));
+e.dom.window.close();
 
 console.log("\n" + "=".repeat(52));
 console.log((fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");

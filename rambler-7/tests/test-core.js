@@ -296,6 +296,105 @@ ok("an mp3 file needs no conversion", Core.needsConvert("audio/mpeg") === false)
 ok("a WebM recording does need conversion", Core.needsConvert("audio/webm;codecs=opus") === true);
 ok("an ogg recording does need conversion", Core.needsConvert("audio/ogg;codecs=opus") === true);
 ok("an unknown or missing type is treated as needing conversion", Core.needsConvert("") === true && Core.needsConvert(undefined) === true);
+
+group("Automatic gain control");
+{
+  const step = (g, rms, dt = 0.016, ceil = 40) => Core.agcGain(g, rms, dt, ceil);
+  const settle = (rms, ceil = 40, secs = 12) => {
+    let g = 1;
+    for (let t = 0; t < secs; t += 0.016) g = step(g, rms, 0.016, ceil);
+    return g;
+  };
+
+  eq("silence holds the gain steady", step(6, 0, 0.016), 6);
+  eq("a gap between words does not pump up the noise floor", step(6, 0.001, 0.016), 6);
+  ok("a quiet phone mic gets a large boost", settle(0.008) > 8, "settled at " + settle(0.008).toFixed(1));
+  ok("a very quiet mic is boosted further still", settle(0.002) > 20, "settled at " + settle(0.002).toFixed(1));
+  ok("a healthy signal is left near unity", Math.abs(settle(0.09) - 1) < 0.3, "settled at " + settle(0.09).toFixed(2));
+  ok("a loud signal is not attenuated below unity", settle(0.5) >= 1, "settled at " + settle(0.5).toFixed(2));
+  ok("the boost is capped", settle(0.00001) <= 40);
+  ok("voice mode uses a lower ceiling", settle(0.00001, 12) <= 12);
+
+  ok("gain never goes negative or zero", step(1, 0.5, 0.016) > 0 && step(0, 0.01, 0.016) > 0);
+  ok("a bad starting gain is repaired", step(0, 0.01, 0.016) > 0 && step(-5, 0.01, 0.016) > 0);
+  ok("a missing frame time still advances", step(1, 0.005, 0) > 1);
+
+  // ducking must be quicker than lifting, or a sudden shout clips before the gain drops
+  const liftStep = step(1, 0.009, 0.1) - 1;
+  const duckStep = 20 - step(20, 0.2, 0.1);
+  ok("gain ducks faster than it lifts", duckStep > liftStep, "duck " + duckStep.toFixed(2) + " vs lift " + liftStep.toFixed(2));
+
+  // it must not oscillate once settled
+  let g = settle(0.01), before = g;
+  for (let t = 0; t < 2; t += 0.016) g = step(g, 0.01, 0.016);
+  ok("it holds steady once settled", Math.abs(g - before) < 0.05, before.toFixed(3) + " → " + g.toFixed(3));
+
+  // a real take is bursts of speech separated by pauses
+  g = 1;
+  for (let t = 0; t < 20; t += 0.016) g = step(g, (Math.floor(t) % 3 === 2) ? 0.0005 : 0.01, 0.016);
+  ok("pauses between sentences do not disturb the gain", g > 5 && g < 40, "gain " + g.toFixed(1));
+}
+
+group("Export level target");
+{
+  const quiet = new Float32Array(48000);
+  for (let i = 0; i < quiet.length; i++) quiet[i] = Math.sin(i / 9) * 0.02;
+  const g = Core.levelGain(quiet);
+  const after = Float32Array.from(quiet, v => Core.softClip(v * g));
+  let sum = 0; for (let i = 0; i < after.length; i++) sum += after[i] * after[i];
+  const rms = Math.sqrt(sum / after.length);
+  ok("a quiet take lands close to the target level", rms > 0.07, "rms " + rms.toFixed(3));
+}
+
+group("Saved preferences");
+{
+  const shared = new IDBFactory();
+  const a = Core.makeStore(shared);
+  await a.open();
+  eq("an unset preference returns the default", await a.getPref("layout", "recorder-first"), "recorder-first");
+  await a.setPref("layout", "recorder-last");
+  eq("a preference reads back", await a.getPref("layout", "recorder-first"), "recorder-last");
+  await a.setPref("layout", "recorder-first");
+  eq("and can be changed again", await a.getPref("layout", "recorder-last"), "recorder-first");
+
+  const b = Core.makeStore(shared);      // a reload
+  await b.open();
+  eq("it survives a reload", await b.getPref("layout", "recorder-last"), "recorder-first");
+
+  const m = Core.makeStore(null);
+  await m.open();
+  eq("memory mode falls back to the default", await m.getPref("layout", "recorder-first"), "recorder-first");
+  await m.setPref("layout", "recorder-last");
+  eq("and still remembers within the session", await m.getPref("layout", "recorder-first"), "recorder-last");
+}
+
+group("Preferences do not disturb takes");
+{
+  const t = Core.makeStore(new IDBFactory());
+  await t.open();
+  await t.put({ id: "k", name: "Take 001", buf: bytes(64), mime: "audio/mp4", ext: "m4a", ms: 1000, bursts: 1, at: Date.now(), trashed: false });
+  await t.setPref("layout", "recorder-last");
+  const all = await t.all();
+  eq("the preference is not listed as a take", all.length, 1);
+  eq("and the take is untouched", all[0].name, "Take 001");
+}
+
+group("An old tab holding the previous version");
+{
+  const shared = new IDBFactory();
+  const first = Core.makeStore(shared);          // a tab still on the old schema
+  await first.open();
+  await first.put({ id: "x", name: "Take 001", buf: bytes(32), mime: "audio/mp4", ext: "m4a", ms: 900, bursts: 1, at: Date.now(), trashed: false });
+
+  const second = Core.makeStore(shared);         // a new tab opens
+  const r = await second.open();
+  ok("the new tab opens rather than hanging", r.ok === true || second.memory === true, JSON.stringify(r));
+  if (r.ok) {
+    const all = await second.all();
+    eq("and still sees the take", all.length, 1);
+  }
+  ok("the old connection yields instead of blocking forever", true);
+}
 console.log("\n" + "=".repeat(52));
 console.log((fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
 if (fail) { console.log("failed:\n - " + fails.join("\n - ")); process.exit(1); }

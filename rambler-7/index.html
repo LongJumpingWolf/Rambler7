@@ -121,7 +121,9 @@ input{-webkit-user-select:text;user-select:text}
   }
 }
 
-.row{display:flex;gap:10px;margin-top:clamp(11px,3.5vw,14px)}
+.row{display:flex;gap:10px;margin-top:clamp(9px,2.6vw,11px)}
+.key.wide{font-size:clamp(11px,3.4vw,12.5px);min-height:52px}
+.key.arm{background:linear-gradient(180deg,#d2705c,#b3503c);color:#fff;box-shadow:0 4px 0 #6d2b1f,inset 0 1px 0 rgba(255,255,255,.3)}
 .key{
   flex:1;min-height:46px;border:0;border-radius:8px;padding:12px 6px;cursor:pointer;font-family:var(--mono);
   font-size:clamp(10px,3.1vw,11.5px);letter-spacing:.14em;font-weight:700;color:#221f1a;
@@ -134,8 +136,8 @@ input{-webkit-user-select:text;user-select:text}
 .key.warn{background:linear-gradient(180deg,#b98f86,#9a6a60);color:#241512;
   box-shadow:0 4px 0 #5f3a33,0 6px 10px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.3)}
 
-.strip{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px;
-  font-size:clamp(8.5px,2.7vw,9.5px);letter-spacing:.1em;color:#8f877a}
+.strip{display:flex;align-items:center;justify-content:space-between;gap:10px 14px;flex-wrap:wrap;
+  margin-top:14px;font-size:clamp(8.5px,2.7vw,9.5px);letter-spacing:.1em;color:#8f877a}
 .sw{display:flex;align-items:center;gap:7px;cursor:pointer;color:#cfc5b0}
 .sw input{position:absolute;opacity:0;pointer-events:none}
 .sw i{width:38px;height:20px;border-radius:10px;background:#191715;position:relative;
@@ -162,7 +164,13 @@ input{-webkit-user-select:text;user-select:text}
 .tab.sel{color:var(--ink);border-bottom-color:var(--btn)}
 .tabs .sp{flex:1}
 .tabs .mini{border:0;background:none;font-family:var(--mono);font-size:10.5px;color:#8c8474;
-  cursor:pointer;letter-spacing:.06em;padding:6px 2px;min-height:34px}
+  cursor:pointer;letter-spacing:.06em;padding:6px 4px;min-height:34px;white-space:nowrap}
+.tabs .mini:hover{color:var(--ink)}
+.tabs .mini[aria-pressed="true"]{color:var(--btn)}
+
+/* Recorder below the library, for thumb reach on a phone. */
+.app.flip .rig{order:2}
+.app.flip .lib{order:1}
 
 .tape{padding:12px 2px;border-bottom:1px solid var(--line)}
 .tape:last-child{border-bottom:0}
@@ -172,8 +180,16 @@ input{-webkit-user-select:text;user-select:text}
 .nm input{width:100%;font:inherit;padding:5px 6px;border:1px solid var(--btn);border-radius:4px;background:#fff;color:inherit}
 .dur{flex:0 0 auto;font-size:12px;color:#6c6455;font-variant-numeric:tabular-nums}
 .meta{font-size:clamp(9.5px,2.9vw,10.5px);color:#8c8474;margin-top:4px;letter-spacing:.04em}
-.seek{height:8px;margin:10px 0 2px;border-radius:4px;background:#cfc7b5;cursor:pointer;overflow:hidden}
-.seek i{display:block;height:100%;width:0;background:var(--btn)}
+.seek{position:relative;height:10px;margin:11px 0 3px;border-radius:5px;background:#c6bda8;
+  cursor:pointer;touch-action:none;box-shadow:inset 0 1px 2px rgba(0,0,0,.22)}
+.seek i{display:block;height:100%;width:0;border-radius:5px;background:#9a9078}
+.seek b{position:absolute;top:50%;left:0;width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;
+  background:var(--paper);border:2px solid #9a9078;opacity:0;transition:opacity .15s}
+.seek.live{background:#bdb39c}
+.seek.live i{background:var(--btn)}
+.seek.live b{opacity:1;border-color:var(--btn);box-shadow:0 1px 3px rgba(0,0,0,.3)}
+.times{display:flex;justify-content:space-between;font-size:10px;color:#8c8474;
+  font-variant-numeric:tabular-nums;letter-spacing:.03em}
 .acts{display:grid;grid-template-columns:repeat(auto-fit,minmax(76px,1fr));gap:6px;margin-top:9px}
 .acts button{border:1px solid var(--line);background:#f2ece0;border-radius:6px;min-height:40px;padding:6px 4px;
   font-family:var(--mono);font-size:clamp(9.5px,2.8vw,10.5px);letter-spacing:.08em;color:#3a352c;cursor:pointer}
@@ -230,13 +246,16 @@ input{-webkit-user-select:text;user-select:text}
     <button class="ptt" id="ptt" aria-label="Push to talk. Hold to record.">PUSH TO TALK<small>hold to record · release to pause</small></button>
 
     <div class="row">
-      <button class="key" id="save" disabled>SAVE TAKE</button>
-      <button class="key warn" id="scrap" disabled>SCRAP</button>
+      <button class="key wide" id="save" disabled>SAVE TAKE</button>
+    </div>
+    <div class="row">
+      <button class="key" id="undo" disabled>UNDO BURST</button>
+      <button class="key warn" id="scrap" disabled>SCRAP TAKE</button>
     </div>
 
     <div class="strip">
       <label class="sw"><input type="checkbox" id="hifi" checked><i></i><span id="hifiTxt">Hi-fi 48 kHz</span></label>
-      <span>Space bar works too</span>
+      <label class="sw"><input type="checkbox" id="flip"><i></i><span>Recorder at bottom</span></label>
     </div>
 
     <div class="note bad" id="warn"></div>
@@ -261,7 +280,7 @@ input{-webkit-user-select:text;user-select:text}
 /* CORE:START — pure logic + storage, kept free of DOM so it can be unit tested */
 var Core = (function(){
 "use strict";
-var DB="rambler7", VER=3, TAKES="takes", PARTS="parts";
+var DB="rambler7", VER=4, TAKES="takes", PARTS="parts", PREFS="prefs";
 
 function pad(n,w){ return String(n).padStart(w,"0"); }
 
@@ -336,7 +355,7 @@ function levelGain(pcm){
   if(rms<1e-5) return 1;                              // silence stays silent
   var target=count*0.995, acc=0, loud=1;
   for(i=0;i<1024;i++){ acc+=bins[i]; if(acc>=target){ loud=(i+1)/1024; break; } }
-  var g=Math.min(0.97/Math.max(loud,1e-6), 0.10/rms);
+  var g=Math.min(0.97/Math.max(loud,1e-6), 0.125/rms);
   return Math.max(0.25, Math.min(g, 16));
 }
 function softClip(v){
@@ -352,6 +371,24 @@ function toInt16(pcm, gain){
   }
   return out;
 }
+/* Automatic gain control. Returns the next input gain given the level actually arriving
+   at the microphone. A fixed gain cannot work: a quiet phone mic and a loud desk mic are
+   two orders of magnitude apart. Gain rises slowly and ducks quickly, and holds still
+   during silence so the noise floor is never pumped up. */
+function agcGain(current, rms, dt, ceiling){
+  /* The gate has to sit below the quietest microphone that still records speech,
+     otherwise the mics that most need help are the ones that get none. */
+  var TARGET=0.09, GATE=0.0012, MIN=1, MAX=ceiling||40;
+  var cur = (current>0) ? current : 1;
+  if(!(rms>0) || rms<GATE) return cur;                 // silence or a gap between words
+  var want = TARGET/rms;
+  if(want<MIN) want=MIN;
+  if(want>MAX) want=MAX;
+  var tc = (want<cur) ? 0.15 : 1.5;                    // duck fast, lift gently
+  var step = 1-Math.exp(-(dt>0?dt:0.016)/tc);
+  return cur + (want-cur)*step;
+}
+
 function joinBuffers(bufs){
   var total=0,i;
   for(i=0;i<bufs.length;i++) total+=bufs[i].byteLength;
@@ -361,7 +398,7 @@ function joinBuffers(bufs){
 }
 
 function makeStore(idbFactory){
-  var db=null, memory=false, mem={takes:new Map(), parts:new Map()};
+  var db=null, memory=false, mem={takes:new Map(), parts:new Map(), prefs:new Map()};
 
   function open(){
     return new Promise(function(res){
@@ -376,6 +413,7 @@ function makeStore(idbFactory){
         var d=req.result;
         if(!d.objectStoreNames.contains(TAKES)) d.createObjectStore(TAKES,{keyPath:"id"});
         if(!d.objectStoreNames.contains(PARTS)) d.createObjectStore(PARTS,{keyPath:"key"});
+        if(!d.objectStoreNames.contains(PREFS)) d.createObjectStore(PREFS,{keyPath:"key"});
       };
       req.onsuccess=function(){
         clearTimeout(timer); db=req.result;
@@ -408,6 +446,19 @@ function makeStore(idbFactory){
   var api={
     get memory(){ return memory || !db; },
     open:open,
+
+    getPref:function(key, fallback){
+      if(api.memory) return Promise.resolve(mem.prefs.has(key)?mem.prefs.get(key):fallback);
+      var p=run(PREFS,"readonly",function(st,set){
+        var r=st.get(key); r.onsuccess=function(){ set(r.result?r.result.value:fallback); };
+      });
+      if(!p) return Promise.resolve(fallback);
+      return p.catch(function(){ return fallback; });
+    },
+    setPref:function(key, value){
+      if(api.memory){ mem.prefs.set(key,value); return Promise.resolve(); }
+      return run(PREFS,"readwrite",function(st){ st.put({key:key, value:value}); }).catch(function(){});
+    },
 
     all:function(){
       var p=run(TAKES,"readonly",function(s,set){ var r=s.getAll(); r.onsuccess=function(){ set(r.result||[]); }; });
@@ -461,6 +512,26 @@ function makeStore(idbFactory){
       return p.catch(function(){ return []; });
     },
 
+    /* Removes the crash-backup records for an undone burst, so recovery cannot
+       bring back audio the user deliberately threw away. */
+    dropPartsFrom:function(session, fromSeq){
+      if(api.memory){
+        Array.from(mem.parts.keys()).forEach(function(k){
+          var r=mem.parts.get(k);
+          if(r && r.session===session && !r.meta && r.seq>=fromSeq) mem.parts.delete(k);
+        });
+        return Promise.resolve();
+      }
+      return run(PARTS,"readwrite",function(st){
+        var r=st.getAll();
+        r.onsuccess=function(){
+          (r.result||[]).forEach(function(rec){
+            if(rec.session===session && !rec.meta && rec.seq>=fromSeq) st.delete(rec.key);
+          });
+        };
+      }).catch(function(){});
+    },
+
     clearParts:function(session){
       if(api.memory){
         Array.from(mem.parts.keys()).forEach(function(k){ if(!session || k.indexOf(session+":")===0) mem.parts.delete(k); });
@@ -509,7 +580,8 @@ function recoverDraft(parts){
 return {
   fmt:fmt, short:short, size:size, cleanName:cleanName, fileName:fileName, nextName:nextName,
   pickMime:pickMime, extFor:extFor, joinBuffers:joinBuffers, makeStore:makeStore, recoverDraft:recoverDraft,
-  levelGain:levelGain, softClip:softClip, toInt16:toInt16, needsConvert:needsConvert
+  levelGain:levelGain, softClip:softClip, toInt16:toInt16, needsConvert:needsConvert,
+  agcGain:agcGain
 };
 })();
 /* CORE:END */
@@ -523,7 +595,8 @@ var $=function(s){ return document.querySelector(s); };
 var els={
   ptt:$("#ptt"), state:$("#state"), clock:$("#clock"), led:$("#led"), bursts:$("#bursts"), src:$("#src"),
   needle:$("#needle"), save:$("#save"), scrap:$("#scrap"), warn:$("#warn"), recover:$("#recover"),
-  list:$("#list"), count:$("#count"), used:$("#used"), bulk:$("#bulk"), player:$("#player"),
+  list:$("#list"), count:$("#count"), used:$("#used"), bulk:$("#bulk"), player:$("#player"), undo:$("#undo"),
+  app:$(".app"), flip:$("#flip"),
   hifi:$("#hifi"), hifiTxt:$("#hifiTxt")
 };
 var store=Core.makeStore(window.indexedDB);
@@ -535,6 +608,8 @@ function clearWarn(){ els.warn.classList.remove("show"); }
 var MIME=Core.pickMime(window.MediaRecorder), EXT=Core.extFor(MIME);
 var stream=null, recStream=null, rec=null, chunks=[], ac=null, analyser=null, tap=null, buf=null;
 var lift=null, dest=null, convPct=-1;
+var inMeter=null, inBuf=null, gainNow=1, agc=40, lastTick=0;
+var marks=[], scrapArmed=0;
 var holding=false, wanted=false, armed=false, bursts=0, elapsed=0, burstAt=0;
 var session=null, seq=0, level=0, hifi=true, saving=false, flashUntil=0;
 
@@ -584,9 +659,25 @@ function encodeMp3(d, onProgress){
     })();
   });
 }
-/* Returns the take in a format phones and chat apps can open. */
+/* Measures a finished take and reports how far off a normal listening level it is. */
+function measure(ab){
+  return decodeMono(ab).then(function(d){ return {gain:Core.levelGain(d.pcm), d:d}; })
+                       .catch(function(){ return null; });
+}
+
+/* Returns the take in a format phones and chat apps can open, at a sensible level.
+   An m4a needs no format change, but if it still came out quiet it is levelled and
+   re-encoded rather than left too soft to hear. */
 function toPortable(ab, mime, ext, onProgress){
-  if(!Core.needsConvert(mime)) return Promise.resolve({buf:ab, mime:mime, ext:ext});
+  if(!Core.needsConvert(mime)){
+    return measure(ab).then(function(m){
+      if(!m || m.gain < 1.6) return {buf:ab, mime:mime, ext:ext};   // already loud enough
+      return loadEncoder()
+        .then(function(){ return encodeMp3(m.d, onProgress); })
+        .then(function(blob){ return blob.arrayBuffer(); })
+        .then(function(out){ return {buf:out, mime:"audio/mpeg", ext:"mp3"}; });
+    });
+  }
   return loadEncoder()
     .then(function(){ return decodeMono(ab); })
     .then(function(d){ return encodeMp3(d, onProgress); })
@@ -603,20 +694,44 @@ function paint(){
     : armed ? "HELD"
     : Date.now()<flashUntil ? "SAVED" : "STANDBY";
   els.led.classList.toggle("on", holding && Math.floor(Date.now()/380)%2===0);
+  if(holding) els.src.textContent="Boost x"+gainNow.toFixed(1);
   els.save.disabled=!armed||live<150||saving;
   els.scrap.disabled=!armed||saving;
+  els.undo.disabled=!armed||holding||saving||!marks.length;
+  if(scrapArmed && Date.now()>=scrapArmed) disarmScrap();
   els.ptt.classList.toggle("live", holding);
   els.hifi.disabled=armed;
 }
+function rmsOf(node, into){
+  node.getByteTimeDomainData(into);
+  var sum=0, i, v;
+  for(i=0;i<into.length;i++){ v=(into[i]-128)/128; sum+=v*v; }
+  return Math.sqrt(sum/into.length);
+}
 function loop(){
+  var now=performance.now();
+  var dt=lastTick ? Math.min((now-lastTick)/1000, 0.25) : 0.016;
+  lastTick=now;
+
+  if(inMeter && lift && holding){
+    var inRms=rmsOf(inMeter, inBuf);
+    gainNow=Core.agcGain(gainNow, inRms, dt, agc);
+    if(lift.gain.setTargetAtTime) lift.gain.setTargetAtTime(gainNow, ac.currentTime, 0.08);
+    else lift.gain.value=gainNow;
+  }
+
   if(analyser && holding){
-    analyser.getByteTimeDomainData(buf);
-    var sum=0;
-    for(var i=0;i<buf.length;i++){ var v=(buf[i]-128)/128; sum+=v*v; }
-    level=Math.max(level*0.82, Math.min(1, Math.sqrt(sum/buf.length)*3.4));
+    level=Math.max(level*0.82, Math.min(1, rmsOf(analyser, buf)*3.4));
   } else level*=0.88;
   var deg=-52+level*104+(holding?(Math.random()-0.5)*3:0);
   els.needle.style.transform="rotate("+deg.toFixed(1)+"deg)";
+
+  /* Progress is driven from here rather than from timeupdate, which fires only a few
+     times a second and stops entirely if the element stalls. */
+  if(playing && !scrub && !els.player.paused){
+    var tot=totalOf(playing);
+    if(tot>0) paintProgress(els.player.currentTime/tot);
+  }
   paint();
   requestAnimationFrame(loop);
 }
@@ -642,11 +757,20 @@ function constraints(){
     ? {echoCancellation:false, noiseSuppression:false, autoGainControl:false, channelCount:1, sampleRate:48000, sampleSize:16}
     : {echoCancellation:true, noiseSuppression:true, autoGainControl:true, channelCount:1} };
 }
+/* iOS keeps the audio session in record mode for as long as a microphone stream is
+   open, which routes playback to the earpiece and makes every take after the first
+   recording sound quiet. Releasing the microphone when idle restores normal output. */
+function releaseMicIfIdle(){
+  if(armed||holding) return;
+  dropStream();
+  if(ac && ac.state==="running" && ac.suspend) { try{ ac.suspend(); }catch(e){} }
+  els.src.textContent="Hold to open mic";
+}
 function dropStream(){
   if(stream){ stream.getTracks().forEach(function(t){ try{t.stop();}catch(e){} }); stream=null; }
   if(tap){ try{tap.disconnect();}catch(e){} tap=null; }
   if(lift){ try{lift.disconnect();}catch(e){} lift=null; }
-  analyser=null; dest=null; recStream=null;
+  analyser=null; inMeter=null; dest=null; recStream=null; gainNow=1;
 }
 function openMic(){
   if(stream) return Promise.resolve(true);
@@ -666,14 +790,31 @@ function openMic(){
        Record through a lift-and-limit chain so the saved file is at a usable level. */
     tap=c.createMediaStreamSource(s);
     var hp=c.createBiquadFilter(); hp.type="highpass"; hp.frequency.value=75;   // room rumble
-    lift=c.createGain(); lift.gain.value=hifi?3.2:1.6;
-    var lim=c.createDynamicsCompressor();
-    lim.threshold.value=-8; lim.knee.value=6; lim.ratio.value=12;
-    lim.attack.value=0.003; lim.release.value=0.18;
+    /* Input meter sits before the gain, so the AGC measures the microphone itself
+       rather than its own output, which keeps the loop stable. */
+    inMeter=c.createAnalyser(); inMeter.fftSize=1024; inBuf=new Uint8Array(inMeter.fftSize);
+
+    lift=c.createGain(); lift.gain.value=1;
+    agc = hifi ? 40 : 12;                        // the OS already boosts in voice mode
+    gainNow = 1;
+
+    var comp=c.createDynamicsCompressor();       // evens out loud and soft passages
+    comp.threshold.value=-22; comp.knee.value=12; comp.ratio.value=3;
+    comp.attack.value=0.006; comp.release.value=0.25;
+
+    var makeup=c.createGain(); makeup.gain.value=2.2;
+
+    var lim=c.createDynamicsCompressor();        // brick wall just under full scale
+    lim.threshold.value=-1.5; lim.knee.value=0; lim.ratio.value=20;
+    lim.attack.value=0.001; lim.release.value=0.08;
+
     dest=c.createMediaStreamDestination();
     analyser=c.createAnalyser(); analyser.fftSize=1024; buf=new Uint8Array(analyser.fftSize);
-    tap.connect(hp); hp.connect(lift); lift.connect(lim); lim.connect(dest);
-    lim.connect(analyser);                       // meter shows the level actually being written
+
+    tap.connect(hp); hp.connect(inMeter);
+    hp.connect(lift); lift.connect(comp); comp.connect(makeup);
+    makeup.connect(lim); lim.connect(dest);
+    lim.connect(analyser);                       // meter shows the level being written
     recStream=dest.stream;
     var set=s.getAudioTracks()[0].getSettings ? s.getAudioTracks()[0].getSettings() : {};
     els.src.textContent=(set.sampleRate?Math.round(set.sampleRate/1000)+" kHz":"Mic live")+(hifi?" hi-fi":" voice");
@@ -690,6 +831,7 @@ function openMic(){
 
 function press(){
   if(holding||saving||wanted) return;
+  disarmScrap();
   wanted=true;
   els.ptt.classList.add("down");
   click(true); buzz(12);
@@ -697,7 +839,7 @@ function press(){
     if(!ok||!wanted){ els.ptt.classList.remove("down"); wanted=false; return; }
     if(holding) return;
     if(!rec){
-      chunks=[]; elapsed=0; bursts=0; seq=0;
+      chunks=[]; elapsed=0; bursts=0; seq=0; marks=[];
       session="s"+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
       try{
         rec=new MediaRecorder(recStream||stream,{mimeType:MIME, audioBitsPerSecond:128000});
@@ -720,6 +862,7 @@ function press(){
     } else if(rec.state==="paused"){
       rec.resume();
     }
+    marks.push({chunks:chunks.length, seq:seq, elapsed:elapsed});   // so this burst can be undone
     holding=true; armed=true; bursts++; burstAt=performance.now();
     store.putDraft({session:session, ms:elapsed, bursts:bursts, mime:MIME, ext:EXT, at:Date.now()});
     paint();
@@ -737,6 +880,30 @@ function release(){
   paint();
 }
 
+/* Takes back the burst you just recorded, for when a sentence comes out wrong.
+   Chunks are dropped at the boundary the burst started on, and the matching crash
+   backup records go with them so a recovery cannot resurrect them. */
+function undoBurst(){
+  if(holding||saving||!armed||!marks.length) return;
+  var m=marks.pop();
+  chunks.length=m.chunks;
+  elapsed=m.elapsed;
+  bursts=Math.max(0, bursts-1);
+  buzz(18);
+  if(session) store.dropPartsFrom(session, m.seq);
+  if(!bursts||!chunks.length){                 // nothing left, so end the take entirely
+    var sess=session;
+    if(rec){ try{ rec.onstop=null; rec.stop(); }catch(e){} rec=null; }
+    chunks=[]; elapsed=0; bursts=0; armed=false; session=null; marks=[];
+    if(sess) store.clearParts(sess);
+    releaseMicIfIdle();
+  } else {
+    store.putDraft({session:session, ms:elapsed, bursts:bursts, mime:MIME, ext:EXT, at:Date.now()});
+  }
+  disarmScrap();
+  paint();
+}
+
 function finish(keep){
   if(!rec||saving) return;
   saving=true; paint();
@@ -746,7 +913,7 @@ function finish(keep){
     rec=null; chunks=[];
     if(!keep||!parts.length){
       elapsed=0; bursts=0; armed=false; saving=false; convPct=-1; session=null;
-      store.clearParts(sess); paint(); return;
+      store.clearParts(sess); releaseMicIfIdle(); paint(); return;
     }
     new Blob(parts,{type:MIME}).arrayBuffer().then(function(ab){
       return toPortable(ab, MIME, EXT, function(p){ convPct=Math.round(p*100); paint(); });
@@ -763,6 +930,7 @@ function finish(keep){
     }).then(function(){
       elapsed=0; bursts=0; armed=false; saving=false; convPct=-1; session=null;
       flashUntil=Date.now()+2200;
+      releaseMicIfIdle();
       view="takes"; syncTabs(); render(); paint();
     }).catch(function(e){
       saving=false; convPct=-1; paint();
@@ -807,8 +975,25 @@ document.addEventListener("keydown", function(e){
 document.addEventListener("keyup", function(e){
   if(e.code==="Space"||e.key==="Enter") release();
 });
-els.save.addEventListener("click", function(){ release(); finish(true); });
-els.scrap.addEventListener("click", function(){ release(); finish(false); });
+els.save.addEventListener("click", function(){ disarmScrap(); release(); finish(true); });
+els.undo.addEventListener("click", function(){ release(); undoBurst(); });
+
+/* Scrapping throws away everything recorded, so it asks first. */
+function disarmScrap(){
+  scrapArmed=0;
+  els.scrap.classList.remove("arm");
+  els.scrap.textContent="SCRAP TAKE";
+}
+els.scrap.addEventListener("click", function(){
+  release();
+  if(!armed) return;
+  if(Date.now()<scrapArmed){ disarmScrap(); finish(false); return; }
+  scrapArmed=Date.now()+4000;
+  els.scrap.classList.add("arm");
+  els.scrap.textContent="TAP TO CONFIRM";
+  buzz(20);
+  setTimeout(function(){ if(Date.now()>=scrapArmed) disarmScrap(); },4100);
+});
 els.hifi.addEventListener("change", function(){
   hifi=els.hifi.checked;
   els.hifiTxt.textContent=hifi?"Hi-fi 48 kHz":"Voice clean-up";
@@ -818,6 +1003,20 @@ els.hifi.addEventListener("change", function(){
 
 /* ---------------- library ---------------- */
 var view="takes", playing=null, url=null, editing=null, fillEl=null, fillMs=0, nodes={};
+var scrub=null, pendingSeek=null;
+
+/* Which way round the two halves sit. On a phone the recorder is easier to reach at the
+   bottom, but that is a matter of grip and preference, so it is the reader's choice. */
+var flipped=false;
+function applyLayout(){
+  els.app.classList.toggle("flip", flipped);
+  els.flip.checked = flipped;
+}
+els.flip.addEventListener("change", function(){
+  flipped = els.flip.checked;
+  applyLayout();
+  store.setPref("layout", flipped ? "recorder-last" : "recorder-first");
+});
 
 function syncTabs(){
   Array.prototype.forEach.call(document.querySelectorAll(".tab"), function(t){
@@ -840,7 +1039,7 @@ function render(){
   return store.all().then(function(all){
     all.sort(function(a,b){ return b.at-a.at; });
     var rows=all.filter(function(x){ return !!x.trashed===(view==="trash"); });
-    fillEl=null; nodes={};
+    fillEl=null; nodes={}; scrub=null;
     els.list.innerHTML="";
     if(!rows.length){
       var p=document.createElement("p"); p.className="empty";
@@ -890,15 +1089,38 @@ function rowFor(it){
 
   var seek=document.createElement("div"); seek.className="seek";
   var fill=document.createElement("i"); seek.appendChild(fill);
-  seek.addEventListener("click", function(e){
-    if(playing!==it.id) return;
-    var r=seek.getBoundingClientRect();
-    var p=Math.min(1,Math.max(0,(e.clientX-r.left)/r.width));
-    var d=els.player.duration;
-    try{ els.player.currentTime=p*((isFinite(d)&&d>0)?d:it.ms/1000); }catch(err){}
+  var knob=document.createElement("b"); seek.appendChild(knob);
+  var times=document.createElement("div"); times.className="times";
+  var atTxt=document.createElement("span"), ofTxt=document.createElement("span");
+  atTxt.textContent="0:00"; ofTxt.textContent=Core.short(it.ms);
+  times.appendChild(atTxt); times.appendChild(ofTxt);
+
+  seek.setAttribute("role","slider");
+  seek.setAttribute("aria-label","Playback position");
+  seek.setAttribute("aria-valuemin","0");
+  seek.setAttribute("aria-valuemax","100");
+  seek.setAttribute("aria-valuenow","0");
+  seek.tabIndex=0;
+
+  seek.addEventListener("pointerdown", function(e){
+    e.preventDefault();
+    var frac=fracFrom(seek, e.clientX);
+    try{ seek.setPointerCapture(e.pointerId); }catch(err){}
+    scrub={id:it.id, el:seek};
+    if(playing!==it.id) startPlay(it, frac);   // tap or drag anywhere starts it there
+    else seekTo(frac);
   });
-  nodes[it.id]={fill:fill, ms:it.ms};
-  if(playing===it.id){ fillEl=fill; fillMs=it.ms; }
+  seek.addEventListener("keydown", function(e){
+    var d = e.key==="ArrowRight" ? 5 : e.key==="ArrowLeft" ? -5 : 0;
+    if(!d) return;
+    e.preventDefault();
+    if(playing!==it.id) return startPlay(it, 0);
+    var t=totalOf(it.id);
+    seekTo((els.player.currentTime + d) / t);
+  });
+
+  nodes[it.id]={fill:fill, knob:knob, at:atTxt, seek:seek, ms:it.ms};
+  if(playing===it.id){ fillEl=fill; fillMs=it.ms; seek.classList.add("live"); }
 
   var acts=document.createElement("div"); acts.className="acts";
   function add(label, cls, fn){
@@ -929,11 +1151,11 @@ function rowFor(it){
     });
   }
 
-  el.appendChild(t1); el.appendChild(meta); el.appendChild(seek); el.appendChild(acts);
+  el.appendChild(t1); el.appendChild(meta); el.appendChild(seek); el.appendChild(times); el.appendChild(acts);
   return el;
 }
 
-function stopIf(id){ if(playing===id){ els.player.pause(); playing=null; } }
+function stopIf(id){ if(playing===id) stopPlayback(); }
 
 /* Updates just the affected rows. Re-rendering the whole list on every play or pause
    rebuilt the progress bar mid-playback, which is what made the transport stutter. */
@@ -941,46 +1163,127 @@ function setPlayUI(){
   Object.keys(nodes).forEach(function(id){
     var n=nodes[id];
     if(n.PLAY) n.PLAY.textContent = (playing===id) ? "STOP" : "PLAY";
-    if(n.fill && playing!==id) n.fill.style.width="0%";
+    if(n.seek) n.seek.classList.toggle("live", playing===id);
+    if(playing!==id) resetBar(n);
   });
-  if(playing && nodes[playing]){ fillEl=nodes[playing].fill; fillMs=nodes[playing].ms; }
-  else fillEl=null;
+}
+function resetBar(n){
+  if(!n) return;
+  if(n.fill) n.fill.style.width="0%";
+  if(n.knob) n.knob.style.left="0%";
+  if(n.at) n.at.textContent="0:00";
+  if(n.seek) n.seek.setAttribute("aria-valuenow","0");
 }
 
-function toggle(it){
-  if(playing===it.id){ els.player.pause(); playing=null; setPlayUI(); return; }
-  if(url) URL.revokeObjectURL(url);
+function totalOf(id){
+  var d=els.player.duration, n=nodes[id];
+  if(isFinite(d)&&d>0) return d;
+  return ((n&&n.ms)||1000)/1000;
+}
+function paintProgress(frac){
+  var n=nodes[playing];
+  if(!n) return;
+  var pct=Math.max(0,Math.min(100,frac*100));
+  if(n.fill) n.fill.style.width=pct+"%";
+  if(n.knob) n.knob.style.left=pct+"%";
+  if(n.at) n.at.textContent=Core.short(frac*totalOf(playing)*1000);
+  if(n.seek) n.seek.setAttribute("aria-valuenow",Math.round(pct));
+}
+function seekTo(frac){
+  if(!playing) return;
+  frac=Math.max(0,Math.min(1,frac));
+  try{ els.player.currentTime=frac*totalOf(playing); }catch(e){}
+  paintProgress(frac);
+}
+
+/* Detaches every handler and stops the element before its source is thrown away.
+   Revoking a URL that is still playing kills the element mid-decode, which is what
+   broke the next take you tried to start. */
+function detach(){
+  var p=els.player;
+  p.onloadedmetadata=null; p.ontimeupdate=null; p.onerror=null; p.oncanplay=null;
+  try{ p.pause(); }catch(e){}
+}
+function stopPlayback(){
+  detach();
+  var was=playing;
+  playing=null; scrub=null; pendingSeek=null;
+  if(was && nodes[was]) resetBar(nodes[was]);
+  setPlayUI();
+}
+
+function startPlay(it, at){
+  detach();                              // stop the outgoing take cleanly first
+  releaseMicIfIdle();                    // otherwise iOS plays back through the earpiece
+
+  var prev=url;
   url=URL.createObjectURL(blobOf(it));
   playing=it.id;
+  pendingSeek=(typeof at==="number") ? at : null;
   setPlayUI();
 
-  var begin=function(){
-    els.player.play().catch(function(){
-      playing=null; setPlayUI();
-      warn("Playback was blocked. Tap PLAY again.");
-    });
+  var p=els.player;
+  p.volume=1;
+  p.onerror=function(){
+    playing=null; setPlayUI();
+    warn("That take could not be played. It may have been recorded in a format this browser cannot open.");
   };
+  var begun=false;
+  function begin(){
+    if(begun) return;
+    begun=true;
+    if(pendingSeek!==null){
+      try{ p.currentTime=pendingSeek*totalOf(it.id); }catch(e){}
+      pendingSeek=null;
+    }
+    p.play().catch(function(){
+      playing=null; setPlayUI();
+      warn("Playback was blocked. Tap play again.");
+    });
+  }
   /* Recorded WebM often reports an unknown duration. Resolving it before playing,
-     rather than seeking after playback has already started, removes the stutter. */
-  els.player.onloadedmetadata=function(){
-    els.player.onloadedmetadata=null;
-    if(isFinite(els.player.duration) && els.player.duration>0) return begin();
-    els.player.ontimeupdate=function(){
-      els.player.ontimeupdate=null;
-      try{ els.player.currentTime=0; }catch(e){}
+     rather than seeking after playback has started, removes the stutter. */
+  p.onloadedmetadata=function(){
+    p.onloadedmetadata=null;
+    if(isFinite(p.duration) && p.duration>0) return begin();
+    p.ontimeupdate=function(){
+      p.ontimeupdate=null;
+      try{ p.currentTime=0; }catch(e){}
       begin();
     };
-    try{ els.player.currentTime=1e101; }catch(e){ begin(); }
+    try{ p.currentTime=1e101; }catch(e){ begin(); }
   };
-  els.player.src=url;
-  els.player.load();
+  p.oncanplay=begin;                     // safety net if metadata never arrives
+  p.src=url;
+  p.load();
+
+  // only now is the old source safe to release
+  if(prev) setTimeout(function(){ try{ URL.revokeObjectURL(prev); }catch(e){} }, 1500);
 }
-els.player.addEventListener("ended", function(){ playing=null; setPlayUI(); });
-els.player.addEventListener("timeupdate", function(){
-  if(!playing||!fillEl) return;
-  var d=els.player.duration, total=(isFinite(d)&&d>0)?d:fillMs/1000;
-  fillEl.style.width=Math.min(100,(els.player.currentTime/total)*100)+"%";
-});
+
+function toggle(it, at){
+  if(playing===it.id && typeof at!=="number"){ stopPlayback(); return; }
+  startPlay(it, at);
+}
+els.player.addEventListener("ended", function(){ stopPlayback(); });
+
+/* Dragging is tracked on the document, so the bar keeps following your finger even
+   when it leaves the bar, and a release anywhere always ends the drag. */
+function fracFrom(el, clientX){
+  var r=el.getBoundingClientRect();
+  if(!r.width) return 0;
+  return Math.min(1, Math.max(0, (clientX-r.left)/r.width));
+}
+function onScrubMove(e){
+  if(!scrub) return;
+  e.preventDefault();
+  seekTo(fracFrom(scrub.el, e.clientX));
+}
+function endScrub(){ scrub=null; }
+document.addEventListener("pointermove", onScrubMove, {passive:false});
+document.addEventListener("pointerup", endScrub);
+document.addEventListener("pointercancel", endScrub);
+window.addEventListener("blur", endScrub);
 
 /* ---------------- export ----------------
    Takes are recorded as m4a wherever the browser allows it, so no conversion is needed.
@@ -988,17 +1291,24 @@ els.player.addEventListener("timeupdate", function(){
    sitting in the library as WebM are converted the first time they are shared. */
 var exportCache={};
 
-
-
-/* Encodes in slices with a yield between them so the interface stays responsive. */
-
-/* Returns a file every phone and chat app can actually open. */
+/* Returns a file every phone and chat app can actually open, at a sensible level. */
 function exportFile(it, onProgress){
   if(exportCache[it.id]) return Promise.resolve(exportCache[it.id]);
   if(!Core.needsConvert(it.mime)){
-    var asis={blob:blobOf(it), name:Core.fileName(it)};      // recorded in a portable format
-    exportCache[it.id]=asis;
-    return Promise.resolve(asis);
+    return measure(it.buf).then(function(m){
+      if(!m || m.gain < 1.6){
+        var asis={blob:blobOf(it), name:Core.fileName(it)};   // portable and loud enough
+        exportCache[it.id]=asis;
+        return asis;
+      }
+      return loadEncoder()
+        .then(function(){ return encodeMp3(m.d, onProgress); })
+        .then(function(blob){
+          var out={blob:blob, name:Core.fileName(it,"mp3")};
+          exportCache[it.id]=out;
+          return out;
+        });
+    });
   }
   return loadEncoder()
     .then(function(){ return decodeMono(it.buf); })
@@ -1010,11 +1320,12 @@ function exportFile(it, onProgress){
     });
 }
 
+/* Shows conversion progress on the button that was pressed. */
 function withExport(it, label, fn){
   var node=nodes[it.id] && nodes[it.id][label];
   var restore=node ? node.textContent : null;
   if(node){ node.disabled=true; node.textContent="0%"; }
-  var show=function(p){ if(node) node.textContent=Math.round(p*100)+"%"; };
+  var show=function(pr){ if(node) node.textContent=Math.round(pr*100)+"%"; };
   return exportFile(it, show).then(function(out){
     if(node){ node.disabled=false; node.textContent=restore; }
     fn(out);
@@ -1109,6 +1420,10 @@ store.open().then(function(r){
   els.recover.appendChild(p); els.recover.appendChild(box);
   els.recover.classList.add("show");
 }).then(function(){
+  return store.getPref("layout","recorder-first");
+}).then(function(pref){
+  flipped = (pref==="recorder-last");
+  applyLayout();
   syncTabs(); render(); paint();
   requestAnimationFrame(loop);
 });
