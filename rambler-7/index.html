@@ -250,7 +250,7 @@ input{-webkit-user-select:text;user-select:text}
   <div class="rig">
     <div class="head">
       <div class="grille"></div>
-      <div class="mark"><b>RAMBLER 7</b><small>FIELD VOICE UNIT</small></div>
+      <div class="mark"><b>RAMBLER 7</b><small>FIELD VOICE UNIT · <span id="build">B?</span></small></div>
     </div>
 
     <div class="screen">
@@ -1857,13 +1857,36 @@ store.open().then(function(r){
 });
 })();
 
-/* Offline support. Only meaningful over http(s), so opening the file directly still works. */
+/* Build marker and offline support.
+   BUILD must match VERSION in sw.js. The marker is shown on the device so the running
+   version can be read at a glance rather than guessed at. */
+var BUILD = "11";
 (function(){
+  var el=document.getElementById("build");
+  if(el) el.textContent="B"+BUILD;
+
   if(!("serviceWorker" in navigator)) return;
   if(location.protocol!=="https:" && location.hostname!=="localhost" && location.hostname!=="127.0.0.1") return;
+
+  /* A cached shell used to stick around until the browser felt like replacing it, which
+     meant a deployed change could go unseen. When a new worker takes over, reload once
+     so the new build is what you are actually looking at. */
+  var hadController = !!navigator.serviceWorker.controller;
+  var reloaded = false;
+  navigator.serviceWorker.addEventListener("controllerchange", function(){
+    if(!hadController || reloaded) return;
+    reloaded = true;
+    location.reload();
+  });
+
   window.addEventListener("load", function(){
     navigator.serviceWorker.register("/sw.js").then(function(reg){
       reg.update();
+      // an installed app can sit for days without a fresh load, so check on return
+      document.addEventListener("visibilitychange", function(){
+        if(!document.hidden) reg.update();
+      });
+      setInterval(function(){ reg.update(); }, 15*60*1000);
     }).catch(function(){ /* offline support is optional, never block the app */ });
   });
 })();
