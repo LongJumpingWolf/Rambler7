@@ -29,7 +29,11 @@
   --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
   --pad:clamp(12px,3.5vw,17px);
 }
-*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none}
+.ptt,.key,.tab,.mini,.acts button,.sw,.seek{
+  -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-user-drag:none;
+}
+.ptt::selection,.ptt *::selection,.key::selection,.acts button::selection{background:transparent}
 html{-webkit-text-size-adjust:100%}
 body{
   margin:0; min-height:100dvh; overscroll-behavior:none; touch-action:manipulation;
@@ -108,6 +112,14 @@ input{-webkit-user-select:text;user-select:text}
 .ptt:focus-visible{outline:3px solid var(--amber);outline-offset:4px}
 .ptt.live{animation:pulse .9s ease-in-out infinite alternate}
 @keyframes pulse{to{box-shadow:0 1px 0 var(--btn-lo),0 0 0 5px rgba(255,58,32,.2),inset 0 3px 9px rgba(0,0,0,.4)}}
+
+@media (max-width:859px){
+  .ptt{
+    position:sticky;
+    bottom:calc(10px + env(safe-area-inset-bottom,0px));
+    z-index:5;
+  }
+}
 
 .row{display:flex;gap:10px;margin-top:clamp(11px,3.5vw,14px)}
 .key{
@@ -272,11 +284,11 @@ function cleanName(v, fallback){
   if(s.length>60) s=s.slice(0,60).trim();
   return s || fallback || "Untitled take";
 }
-function fileName(it){
+function fileName(it, ext){
   var base=String((it&&it.name)||"take").normalize("NFKD")
     .replace(/[^\w\- ]+/g,"").trim().replace(/\s+/g,"_").slice(0,50);
   if(!base) base="take";
-  return base+"."+((it&&it.ext)||"webm");
+  return base+"."+(ext||(it&&it.ext)||"webm");
 }
 function nextName(list){
   var max=0;
@@ -297,6 +309,40 @@ function extFor(mime){
   if(mime.indexOf("mp4")>-1) return "m4a";
   if(mime.indexOf("ogg")>-1) return "ogg";
   return "webm";
+}
+/* Lifts a quiet recording to a normal listening level.
+   Uses the 99.5th percentile rather than the absolute peak, so one cough or bumped
+   microphone cannot hold the whole take down. The soft clipper catches the outliers. */
+function levelGain(pcm){
+  var n=pcm.length;
+  if(!n) return 1;
+  var bins=new Uint32Array(1024), sum=0, count=0, i, v, bi;
+  var step = n>480000 ? Math.ceil(n/480000) : 1;      // long takes are sampled, not scanned
+  for(i=0;i<n;i+=step){
+    v=pcm[i]; sum+=v*v; v=v<0?-v:v;
+    bi = v>=1 ? 1023 : (v*1024)|0;
+    bins[bi]++; count++;
+  }
+  if(!count) return 1;
+  var rms=Math.sqrt(sum/count);
+  if(rms<1e-5) return 1;                              // silence stays silent
+  var target=count*0.995, acc=0, loud=1;
+  for(i=0;i<1024;i++){ acc+=bins[i]; if(acc>=target){ loud=(i+1)/1024; break; } }
+  var g=Math.min(0.97/Math.max(loud,1e-6), 0.10/rms);
+  return Math.max(0.25, Math.min(g, 16));
+}
+function softClip(v){
+  if(v>0.9) return 0.9+0.1*Math.tanh((v-0.9)*10);
+  if(v<-0.9) return -0.9+0.1*Math.tanh((v+0.9)*10);
+  return v;
+}
+function toInt16(pcm, gain){
+  var out=new Int16Array(pcm.length), i, v;
+  for(i=0;i<pcm.length;i++){
+    v=softClip(pcm[i]*gain);
+    out[i]= v<0 ? Math.max(-32768, v*32768) : Math.min(32767, v*32767);
+  }
+  return out;
 }
 function joinBuffers(bufs){
   var total=0,i;
@@ -454,7 +500,8 @@ function recoverDraft(parts){
 
 return {
   fmt:fmt, short:short, size:size, cleanName:cleanName, fileName:fileName, nextName:nextName,
-  pickMime:pickMime, extFor:extFor, joinBuffers:joinBuffers, makeStore:makeStore, recoverDraft:recoverDraft
+  pickMime:pickMime, extFor:extFor, joinBuffers:joinBuffers, makeStore:makeStore, recoverDraft:recoverDraft,
+  levelGain:levelGain, softClip:softClip, toInt16:toInt16
 };
 })();
 /* CORE:END */
@@ -478,7 +525,8 @@ function clearWarn(){ els.warn.classList.remove("show"); }
 
 /* ---------------- capture ---------------- */
 var MIME=Core.pickMime(window.MediaRecorder), EXT=Core.extFor(MIME);
-var stream=null, rec=null, chunks=[], ac=null, analyser=null, tap=null, buf=null;
+var stream=null, recStream=null, rec=null, chunks=[], ac=null, analyser=null, tap=null, buf=null;
+var lift=null, dest=null;
 var holding=false, wanted=false, armed=false, bursts=0, elapsed=0, burstAt=0;
 var session=null, seq=0, level=0, hifi=true, saving=false, flashUntil=0;
 
@@ -533,7 +581,8 @@ function constraints(){
 function dropStream(){
   if(stream){ stream.getTracks().forEach(function(t){ try{t.stop();}catch(e){} }); stream=null; }
   if(tap){ try{tap.disconnect();}catch(e){} tap=null; }
-  analyser=null;
+  if(lift){ try{lift.disconnect();}catch(e){} lift=null; }
+  analyser=null; dest=null; recStream=null;
 }
 function openMic(){
   if(stream) return Promise.resolve(true);
@@ -549,8 +598,19 @@ function openMic(){
       t.onended=function(){ warn("The microphone went away. Reconnect it and hold again."); release(); dropStream(); };
     });
     var c=ctx();
+    /* Raw mic input is quiet, especially in hi-fi mode where auto gain is off.
+       Record through a lift-and-limit chain so the saved file is at a usable level. */
+    tap=c.createMediaStreamSource(s);
+    var hp=c.createBiquadFilter(); hp.type="highpass"; hp.frequency.value=75;   // room rumble
+    lift=c.createGain(); lift.gain.value=hifi?3.2:1.6;
+    var lim=c.createDynamicsCompressor();
+    lim.threshold.value=-8; lim.knee.value=6; lim.ratio.value=12;
+    lim.attack.value=0.003; lim.release.value=0.18;
+    dest=c.createMediaStreamDestination();
     analyser=c.createAnalyser(); analyser.fftSize=1024; buf=new Uint8Array(analyser.fftSize);
-    tap=c.createMediaStreamSource(s); tap.connect(analyser);
+    tap.connect(hp); hp.connect(lift); lift.connect(lim); lim.connect(dest);
+    lim.connect(analyser);                       // meter shows the level actually being written
+    recStream=dest.stream;
     var set=s.getAudioTracks()[0].getSettings ? s.getAudioTracks()[0].getSettings() : {};
     els.src.textContent=(set.sampleRate?Math.round(set.sampleRate/1000)+" kHz":"Mic live")+(hifi?" hi-fi":" voice");
     clearWarn();
@@ -576,9 +636,9 @@ function press(){
       chunks=[]; elapsed=0; bursts=0; seq=0;
       session="s"+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
       try{
-        rec=new MediaRecorder(stream,{mimeType:MIME, audioBitsPerSecond:128000});
+        rec=new MediaRecorder(recStream||stream,{mimeType:MIME, audioBitsPerSecond:128000});
       }catch(e){
-        try{ rec=new MediaRecorder(stream,{mimeType:MIME}); }
+        try{ rec=new MediaRecorder(recStream||stream,{mimeType:MIME}); }
         catch(e2){ warn("Recording could not start in this browser."); return; }
       }
       rec.ondataavailable=function(e){
@@ -658,9 +718,13 @@ els.ptt.addEventListener("pointerdown", function(e){
 els.ptt.addEventListener("pointerup", release);
 els.ptt.addEventListener("pointercancel", release);
 els.ptt.addEventListener("contextmenu", function(e){ e.preventDefault(); });
+els.ptt.addEventListener("selectstart", function(e){ e.preventDefault(); });
+els.ptt.addEventListener("dragstart", function(e){ e.preventDefault(); });
 window.addEventListener("blur", release);
 document.addEventListener("visibilitychange", function(){ if(document.hidden) release(); });
 window.addEventListener("pagehide", function(){ release(); dropStream(); });
+window.addEventListener("orientationchange", function(){ release(); });
+if(window.screen && screen.orientation) screen.orientation.addEventListener("change", function(){ release(); });
 window.addEventListener("beforeunload", function(e){
   if(armed){ e.preventDefault(); e.returnValue=""; }
 });
@@ -687,7 +751,7 @@ els.hifi.addEventListener("change", function(){
 });
 
 /* ---------------- library ---------------- */
-var view="takes", playing=null, url=null, editing=null, fillEl=null, fillMs=0;
+var view="takes", playing=null, url=null, editing=null, fillEl=null, fillMs=0, nodes={};
 
 function syncTabs(){
   Array.prototype.forEach.call(document.querySelectorAll(".tab"), function(t){
@@ -710,7 +774,7 @@ function render(){
   return store.all().then(function(all){
     all.sort(function(a,b){ return b.at-a.at; });
     var rows=all.filter(function(x){ return !!x.trashed===(view==="trash"); });
-    fillEl=null;
+    fillEl=null; nodes={};
     els.list.innerHTML="";
     if(!rows.length){
       var p=document.createElement("p"); p.className="empty";
@@ -765,6 +829,7 @@ function rowFor(it){
     var d=els.player.duration;
     try{ els.player.currentTime=p*((isFinite(d)&&d>0)?d:it.ms/1000); }catch(err){}
   });
+  nodes[it.id]={fill:fill, ms:it.ms};
   if(playing===it.id){ fillEl=fill; fillMs=it.ms; }
 
   var acts=document.createElement("div"); acts.className="acts";
@@ -772,9 +837,11 @@ function rowFor(it){
     var b=document.createElement("button"); b.textContent=label;
     if(cls) b.className=cls;
     b.addEventListener("click", fn); acts.appendChild(b);
+    nodes[it.id][label]=b;
+    return b;
   }
   if(!it.trashed){
-    add(playing===it.id?"STOP":"PLAY","pri",function(){ toggle(it); });
+    add("PLAY","pri",function(){ toggle(it); }).textContent = (playing===it.id)?"STOP":"PLAY";
     add("RENAME","",function(){ editing=it.id; render(); });
     add("SHARE","",function(){ share(it); });
     add("DOWNLOAD","",function(){ download(it); });
@@ -789,6 +856,7 @@ function rowFor(it){
     });
     add("DELETE FOREVER","",function(){
       stopIf(it.id);
+      delete exportCache[it.id];
       store.del(it.id).then(render);
     });
   }
@@ -798,44 +866,174 @@ function rowFor(it){
 }
 
 function stopIf(id){ if(playing===id){ els.player.pause(); playing=null; } }
+
+/* Updates just the affected rows. Re-rendering the whole list on every play or pause
+   rebuilt the progress bar mid-playback, which is what made the transport stutter. */
+function setPlayUI(){
+  Object.keys(nodes).forEach(function(id){
+    var n=nodes[id];
+    if(n.PLAY) n.PLAY.textContent = (playing===id) ? "STOP" : "PLAY";
+    if(n.fill && playing!==id) n.fill.style.width="0%";
+  });
+  if(playing && nodes[playing]){ fillEl=nodes[playing].fill; fillMs=nodes[playing].ms; }
+  else fillEl=null;
+}
+
 function toggle(it){
-  if(playing===it.id){ els.player.pause(); playing=null; render(); return; }
+  if(playing===it.id){ els.player.pause(); playing=null; setPlayUI(); return; }
   if(url) URL.revokeObjectURL(url);
   url=URL.createObjectURL(blobOf(it));
-  els.player.src=url;
-  els.player.onloadedmetadata=function(){
-    if(!isFinite(els.player.duration)){
-      try{ els.player.currentTime=1e101; }catch(e){}
-      els.player.ontimeupdate=function(){ els.player.ontimeupdate=null; try{ els.player.currentTime=0; }catch(e){} };
-    }
-  };
-  els.player.play().catch(function(){ warn("Playback was blocked. Tap PLAY again."); });
   playing=it.id;
-  render();
+  setPlayUI();
+
+  var begin=function(){
+    els.player.play().catch(function(){
+      playing=null; setPlayUI();
+      warn("Playback was blocked. Tap PLAY again.");
+    });
+  };
+  /* Recorded WebM often reports an unknown duration. Resolving it before playing,
+     rather than seeking after playback has already started, removes the stutter. */
+  els.player.onloadedmetadata=function(){
+    els.player.onloadedmetadata=null;
+    if(isFinite(els.player.duration) && els.player.duration>0) return begin();
+    els.player.ontimeupdate=function(){
+      els.player.ontimeupdate=null;
+      try{ els.player.currentTime=0; }catch(e){}
+      begin();
+    };
+    try{ els.player.currentTime=1e101; }catch(e){ begin(); }
+  };
+  els.player.src=url;
+  els.player.load();
 }
-els.player.addEventListener("ended", function(){ playing=null; render(); });
+els.player.addEventListener("ended", function(){ playing=null; setPlayUI(); });
 els.player.addEventListener("timeupdate", function(){
   if(!playing||!fillEl) return;
   var d=els.player.duration, total=(isFinite(d)&&d>0)?d:fillMs/1000;
   fillEl.style.width=Math.min(100,(els.player.currentTime/total)*100)+"%";
 });
 
-function share(it){
-  var file;
-  try{ file=new File([blobOf(it)], Core.fileName(it), {type:it.mime||"audio/webm"}); }
-  catch(e){ return download(it); }
-  if(navigator.canShare&&navigator.canShare({files:[file]})&&navigator.share){
-    navigator.share({files:[file], title:it.name}).catch(function(err){
-      if(!err||err.name!=="AbortError") download(it);
-    });
-  } else download(it);
+/* ---------------- export ----------------
+   Browsers record WebM/Opus, which most phones, chat apps and audio players will not
+   open. Recordings are kept in the recorded format so saving stays instant, then
+   converted to MP3 the first time a take is shared or downloaded. */
+var lameLoading=null, exportCache={};
+
+function loadEncoder(){
+  if(window.lamejs) return Promise.resolve();
+  if(lameLoading) return lameLoading;
+  lameLoading=new Promise(function(res,rej){
+    var sc=document.createElement("script");
+    sc.src="lame.js";
+    sc.onload=function(){ window.lamejs ? res() : rej(new Error("encoder")); };
+    sc.onerror=function(){ rej(new Error("encoder")); };
+    document.head.appendChild(sc);
+  });
+  return lameLoading;
 }
+
+function decodeMono(ab){
+  return ctx().decodeAudioData(ab.slice(0)).then(function(audio){
+    var n=audio.length, chans=audio.numberOfChannels, out=new Float32Array(n), k, i;
+    for(k=0;k<chans;k++){
+      var d=audio.getChannelData(k);
+      for(i=0;i<n;i++) out[i]+=d[i]/chans;
+    }
+    return {pcm:out, rate:audio.sampleRate};
+  });
+}
+
+/* Encodes in slices with a yield between them so the interface stays responsive. */
+function encodeMp3(d, onProgress){
+  var enc=new window.lamejs.Mp3Encoder(1, d.rate, 128);
+  var gain=Core.levelGain(d.pcm), n=d.pcm.length, i=0, parts=[], BLOCK=1152*64;
+  return new Promise(function(res){
+    (function step(){
+      var end=Math.min(i+BLOCK, n);
+      var chunk=enc.encodeBuffer(Core.toInt16(d.pcm.subarray(i,end), gain));
+      if(chunk.length) parts.push(chunk);
+      i=end;
+      if(onProgress) onProgress(i/n);
+      if(i<n) setTimeout(step,0);
+      else{
+        var last=enc.flush();
+        if(last.length) parts.push(last);
+        res(new Blob(parts,{type:"audio/mpeg"}));
+      }
+    })();
+  });
+}
+
+/* Returns a file every phone and chat app can actually open. */
+function exportFile(it, onProgress){
+  if(exportCache[it.id]) return Promise.resolve(exportCache[it.id]);
+  var mime=it.mime||"";
+  if(mime.indexOf("mp4")>-1||mime.indexOf("mpeg")>-1||mime.indexOf("aac")>-1){
+    var asis={blob:blobOf(it), name:Core.fileName(it)};      // already universally playable
+    exportCache[it.id]=asis;
+    return Promise.resolve(asis);
+  }
+  return loadEncoder()
+    .then(function(){ return decodeMono(it.buf); })
+    .then(function(d){ return encodeMp3(d, onProgress); })
+    .then(function(blob){
+      var out={blob:blob, name:Core.fileName(it,"mp3")};
+      exportCache[it.id]=out;
+      return out;
+    });
+}
+
+function withExport(it, label, fn){
+  var node=nodes[it.id] && nodes[it.id][label];
+  var restore=node ? node.textContent : null;
+  if(node){ node.disabled=true; node.textContent="0%"; }
+  var show=function(p){ if(node) node.textContent=Math.round(p*100)+"%"; };
+  return exportFile(it, show).then(function(out){
+    if(node){ node.disabled=false; node.textContent=restore; }
+    fn(out);
+  }).catch(function(){
+    if(node){ node.disabled=false; node.textContent=restore; }
+    warn("That take could not be converted for sharing. It is still safe in your library.");
+  });
+}
+
+function share(it){
+  withExport(it, "SHARE", function(out){
+    var file;
+    try{ file=new File([out.blob], out.name, {type:out.blob.type}); }
+    catch(e){ return saveToDisk(out); }
+    if(navigator.share && navigator.canShare && navigator.canShare({files:[file]})){
+      navigator.share({files:[file], title:it.name}).catch(function(err){
+        if(!err||err.name!=="AbortError") saveToDisk(out);
+      });
+    } else saveToDisk(out);
+  });
+}
+
 function download(it){
-  var u=URL.createObjectURL(blobOf(it));
+  withExport(it, "DOWNLOAD", saveToDisk);
+}
+
+function saveToDisk(out){
+  var u=URL.createObjectURL(out.blob);
   var a=document.createElement("a");
-  a.href=u; a.download=Core.fileName(it);
+  a.href=u; a.download=out.name; a.rel="noopener";
   document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(function(){ URL.revokeObjectURL(u); },5000);
+  /* Sandboxed frames and iOS Safari ignore the download attribute, so offer the file
+     in a tab as a fallback rather than failing silently. */
+  setTimeout(function(){
+    if(!downloadWorks()){
+      var w=window.open(u,"_blank");
+      if(!w) warn("Downloads are blocked here. Open this page in its own browser tab to save or share takes.");
+    }
+    setTimeout(function(){ URL.revokeObjectURL(u); },20000);
+  },400);
+}
+function downloadWorks(){
+  var a=document.createElement("a");
+  if(!("download" in a)) return false;
+  try{ return window.self===window.top; }catch(e){ return false; }   // cross-origin frame
 }
 els.bulk.addEventListener("click", function(){
   store.all().then(function(all){

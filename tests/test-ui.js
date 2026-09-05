@@ -17,7 +17,7 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
 /* ---- fake capture stack ---------------------------------------------- */
 function makeEnv(opts = {}) {
   const idb = opts.idb === null ? null : (opts.idb || new IDBFactory());
-  const state = { granted: opts.granted !== false, chunkBytes: 4000, tracksStopped: 0, recorders: [], downloads: [], shared: [], vibrations: [] };
+  const state = { destStreams: 0, decoded: 0, encodedSamples: 0, encoder: null, granted: opts.granted !== false, chunkBytes: 4000, tracksStopped: 0, recorders: [], downloads: [], shared: [], vibrations: [] };
 
   class FakeMediaRecorder {
     constructor(stream, cfg) {
@@ -45,16 +45,38 @@ function makeEnv(opts = {}) {
       w.indexedDB = idb || undefined;
       w.Blob = NodeBlob; w.File = NodeFile;
       w.MediaRecorder = FakeMediaRecorder;
+      const node = () => ({ connect() {}, disconnect() {} });
       w.AudioContext = class {
         constructor() { this.state = "running"; this.sampleRate = 48000; }
         resume() {}
-        createAnalyser() { return { fftSize: 1024, getByteTimeDomainData(a) { a.fill(128); } }; }
-        createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
+        createAnalyser() { return Object.assign(node(), { fftSize: 1024, getByteTimeDomainData(a) { a.fill(128); } }); }
+        createMediaStreamSource() { return node(); }
         createBuffer(c, n) { return { getChannelData: () => new Float32Array(n) }; }
-        createBufferSource() { return { connect() {}, start() {} }; }
-        createBiquadFilter() { return { frequency: {}, Q: {}, connect() {} }; }
-        createGain() { return { gain: {}, connect() {} }; }
+        createBufferSource() { return Object.assign(node(), { start() {} }); }
+        createBiquadFilter() { return Object.assign(node(), { type: "", frequency: { value: 0 }, Q: { value: 0 } }); }
+        createGain() { return Object.assign(node(), { gain: { value: 1 } }); }
+        createDynamicsCompressor() {
+          return Object.assign(node(), { threshold: {}, knee: {}, ratio: {}, attack: {}, release: {} });
+        }
+        createMediaStreamDestination() {
+          state.destStreams++;
+          return Object.assign(node(), { stream: { __processed: true, getTracks: () => [], getAudioTracks: () => [] } });
+        }
+        decodeAudioData(ab) {
+          const n = Math.max(1152, Math.floor(ab.byteLength / 4));
+          state.decoded++;
+          return Promise.resolve({
+            length: n, numberOfChannels: 1, sampleRate: 48000,
+            getChannelData: () => { const f = new Float32Array(n); for (let i = 0; i < n; i++) f[i] = Math.sin(i / 20) * 0.02; return f; }
+          });
+        }
       };
+      // stand-in MP3 encoder, so the export path runs without loading the real one
+      w.lamejs = { Mp3Encoder: class {
+        constructor(ch, rate, kbps) { state.encoder = { ch, rate, kbps }; }
+        encodeBuffer(s16) { state.encodedSamples += s16.length; return new Int8Array(Math.ceil(s16.length / 8)); }
+        flush() { return new Int8Array(4); }
+      } };
       w.navigator.mediaDevices = {
         getUserMedia() {
           if (!state.granted) { const e = new Error("denied"); e.name = "NotAllowedError"; return Promise.reject(e); }
@@ -200,19 +222,27 @@ ok("newest take is listed first", nameOf(rows(e)[0]) === autoName, names.join(",
 
 /* ================================================================== */
 group("Download and share");
-clickBtn(e, rows(e)[1], "DOWNLOAD"); await wait(30);
-eq("download uses a safe filename", e.state.downloads[0], "Standup_notes.webm");
+clickBtn(e, rows(e)[1], "DOWNLOAD"); await wait(400);
+eq("download converts WebM to a shareable MP3", e.state.downloads[0], "Standup_notes.mp3");
+ok("the recording was decoded for conversion", e.state.decoded > 0);
+ok("audio was actually run through the encoder", e.state.encodedSamples > 0);
+eq("encoded as mono at the recorded rate", e.state.encoder && e.state.encoder.ch, 1);
 e.w.navigator.canShare = () => false;
-clickBtn(e, rows(e)[1], "SHARE"); await wait(30);
+clickBtn(e, rows(e)[1], "SHARE"); await wait(300);
 eq("share falls back to a download when the sharesheet is unavailable", e.state.downloads.length, 2);
 e.w.navigator.canShare = () => true;
 let sharedWith = null;
 e.w.navigator.share = o => { sharedWith = o; return Promise.resolve(); };
-clickBtn(e, rows(e)[1], "SHARE"); await wait(30);
-ok("share hands a real audio file to the sharesheet", !!sharedWith && sharedWith.files && sharedWith.files[0].name === "Standup_notes.webm");
+clickBtn(e, rows(e)[1], "SHARE"); await wait(300);
+ok("share hands a real MP3 to the sharesheet",
+   !!sharedWith && sharedWith.files && sharedWith.files[0].name === "Standup_notes.mp3",
+   sharedWith && sharedWith.files ? sharedWith.files[0].name : "nothing shared");
+ok("the shared file carries the right media type",
+   !!sharedWith && sharedWith.files[0].type === "audio/mpeg",
+   sharedWith && sharedWith.files ? sharedWith.files[0].type : "-");
 eq("share did not also trigger a download", e.state.downloads.length, 2);
 e.w.navigator.share = () => { const err = new Error("x"); err.name = "AbortError"; return Promise.reject(err); };
-clickBtn(e, rows(e)[1], "SHARE"); await wait(40);
+clickBtn(e, rows(e)[1], "SHARE"); await wait(300);
 eq("cancelling the sharesheet does nothing", e.state.downloads.length, 2);
 
 /* ================================================================== */
@@ -450,6 +480,85 @@ clickBtn(e, rows(e)[0], "RENAME"); await wait(40);
   await wait(80);
 }
 eq("the rename still went through", nameOf(rows(e)[0]), "Voice memo one");
+e.dom.window.close();
+
+
+/* ================================================================== */
+group("Rotation mid-hold");
+e = makeEnv(); await wait(80);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+eq("recording before rotation", e.$("#state").textContent, "\u25cf RECORDING");
+e.w.dispatchEvent(new e.w.Event("orientationchange"));
+await wait(20);
+eq("rotating pauses the burst instead of leaving it stuck", e.$("#state").textContent, "HELD");
+eq("the recorder itself is paused", e.state.recorders[0].state, "paused");
+ok("the take is not lost, it can still be saved", e.$("#save").disabled === false);
+e.fire(e.$("#save"), "click"); await wait(150);
+eq("a take interrupted by rotation still saves", rows(e).length, 1);
+e.dom.window.close();
+
+group("Repeated fast presses do not select text on the button");
+e = makeEnv(); await wait(80);
+const sel = new e.w.Event("selectstart", { cancelable: true });
+e.$("#ptt").dispatchEvent(sel);
+ok("selectstart on the hold button is prevented", sel.defaultPrevented === true);
+for(let i=0;i<6;i++){
+  e.fire(e.$("#ptt"), "pointerdown");
+  e.fire(e.$("#ptt"), "pointerup");
+}
+await wait(200);
+ok("rapid repeated taps do not throw or wedge the recorder", e.$("#state").textContent === "STANDBY" || e.$("#state").textContent === "HELD");
+e.dom.window.close();
+
+
+/* ================================================================== */
+group("Recording level");
+e = makeEnv(); await wait(80);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+ok("audio is recorded through a processing chain, not straight off the mic", e.state.destStreams > 0);
+ok("the recorder is fed the processed stream", e.state.recorders[0].stream.__processed === true);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+e.dom.window.close();
+
+group("Export is reused, not recomputed");
+e = makeEnv(); await wait(80);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+e.fire(e.$("#save"), "click"); await wait(200);
+clickBtn(e, rows(e)[0], "DOWNLOAD"); await wait(400);
+const firstDecodes = e.state.decoded;
+ok("the first export does the conversion work", firstDecodes > 0);
+clickBtn(e, rows(e)[0], "DOWNLOAD"); await wait(200);
+eq("a second export reuses the converted file", e.state.decoded, firstDecodes);
+eq("but still produces a file", e.state.downloads.length, 2);
+e.dom.window.close();
+
+group("Play and pause do not rebuild the list");
+e = makeEnv(); await wait(80);
+for (let k = 0; k < 2; k++) {
+  e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+  e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+  e.fire(e.$("#save"), "click"); await wait(200);
+}
+eq("two takes to play with", rows(e).length, 2);
+const rowNodeBefore = rows(e)[0];
+const fillBefore = rowNodeBefore.querySelector(".seek i");
+clickBtn(e, rows(e)[0], "PLAY"); await wait(80);
+ok("the row element is not replaced when playback starts", rows(e)[0] === rowNodeBefore);
+ok("the progress bar survives, so it cannot jump", rows(e)[0].querySelector(".seek i") === fillBefore);
+eq("the button flips to stop in place", Array.from(rows(e)[0].querySelectorAll(".acts button")).map(b => b.textContent)[0], "STOP");
+eq("the other row still offers play", Array.from(rows(e)[1].querySelectorAll(".acts button")).map(b => b.textContent)[0], "PLAY");
+clickBtn(e, rows(e)[0], "STOP"); await wait(60);
+ok("stopping also leaves the row in place", rows(e)[0] === rowNodeBefore);
+eq("and flips the label back", Array.from(rows(e)[0].querySelectorAll(".acts button")).map(b => b.textContent)[0], "PLAY");
+
+clickBtn(e, rows(e)[0], "PLAY"); await wait(60);
+clickBtn(e, rows(e)[1], "PLAY"); await wait(60);
+eq("switching takes stops the first", Array.from(rows(e)[0].querySelectorAll(".acts button")).map(b => b.textContent)[0], "PLAY");
+eq("and starts the second", Array.from(rows(e)[1].querySelectorAll(".acts button")).map(b => b.textContent)[0], "STOP");
+for (let k = 0; k < 8; k++) { clickBtn(e, rows(e)[1], k % 2 ? "PLAY" : "STOP"); await wait(25); }
+ok("hammering play and pause leaves a consistent state",
+   rows(e).length === 2 && Array.from(rows(e)[1].querySelectorAll(".acts button")).map(b => b.textContent)[0].match(/PLAY|STOP/));
 e.dom.window.close();
 
 console.log("\n" + "=".repeat(52));

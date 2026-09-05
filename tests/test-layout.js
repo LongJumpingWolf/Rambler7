@@ -73,6 +73,19 @@ ok("no ALL-CAPS shouting in the empty state", /No takes yet/.test(html));
 ok("the empty trash reads plainly", /Nothing in the trash\./.test(html));
 ok("errors say what to do next", /Allow the mic for this page and hold again/.test(html));
 
+
+group("Thumb reach and press hardening");
+ok("the hold button stays reachable without scrolling on phones", /@media \(max-width:859px\)\{[\s\S]*?\.ptt\{[\s\S]*?position:sticky/.test(css));
+ok("it sticks near the bottom, in thumb range", /position:sticky;[\s\S]*?bottom:calc\(10px \+ env\(safe-area-inset-bottom/.test(css));
+ok("no long-press callout on any control", /-webkit-touch-callout:none/.test(css) && (css.match(/-webkit-touch-callout:none/g)||[]).length >= 2);
+ok("selection is blocked on the hold button and the other controls", /\.ptt,\.key,\.tab,\.mini,\.acts button,\.sw,\.seek\{[\s\S]*?user-select:none/.test(css));
+ok("the selection highlight itself is transparent", /\.ptt::selection/.test(css));
+ok("selectstart is blocked at the JS level too", /addEventListener\("selectstart"/.test(html));
+ok("drag ghosting is blocked", /addEventListener\("dragstart"/.test(html));
+
+group("Orientation change");
+ok("rotating releases a held burst instead of leaving it stuck", /addEventListener\("orientationchange", function\(\)\{ release\(\); \}\)/.test(html));
+ok("the modern orientation API is also covered", /screen\.orientation\.addEventListener\("change"/.test(html));
 console.log("\n" + "=".repeat(52));
 console.log((fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
 if (fail) { console.log("failed:\n - " + fails.join("\n - ")); process.exit(1); }
