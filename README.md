@@ -52,7 +52,7 @@ npm install
 npm test
 ```
 
-398 checks across five suites, run in Node against the real `index.html`:
+443 checks across five suites, run in Node against the real `index.html`:
 
 - **core** — formatting, rename validation, filename sanitising, take numbering, and the
   storage layer against a real IndexedDB implementation. Includes 5 MB round trips,
@@ -70,7 +70,15 @@ npm test
 
 **Push to talk.** The first hold opens the microphone and starts one `MediaRecorder`.
 Releasing calls `pause()`, the next hold calls `resume()`. The recorder closes only when
-you press Save, so all bursts land in a single file.
+you press Save, so all bursts land in a single file. Undo burst takes back the last one
+if a sentence came out wrong, dropping its chunks and its crash-backup records together.
+Scrapping the whole take asks for a second tap first.
+
+**Playback level.** iOS keeps the audio session in record mode for as long as a
+microphone stream is open, which routes playback through the earpiece and makes every
+take sound quiet after the first recording. The microphone is released as soon as a take
+is finished and before any playback, which hands the session back and restores normal
+speaker output.
 
 **Nothing is lost.** Each chunk is written to its own IndexedDB record as it arrives.
 If the tab dies mid-take, the next launch offers the audio back, reassembled in order.

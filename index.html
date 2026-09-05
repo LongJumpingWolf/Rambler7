@@ -121,7 +121,9 @@ input{-webkit-user-select:text;user-select:text}
   }
 }
 
-.row{display:flex;gap:10px;margin-top:clamp(11px,3.5vw,14px)}
+.row{display:flex;gap:10px;margin-top:clamp(9px,2.6vw,11px)}
+.key.wide{font-size:clamp(11px,3.4vw,12.5px);min-height:52px}
+.key.arm{background:linear-gradient(180deg,#d2705c,#b3503c);color:#fff;box-shadow:0 4px 0 #6d2b1f,inset 0 1px 0 rgba(255,255,255,.3)}
 .key{
   flex:1;min-height:46px;border:0;border-radius:8px;padding:12px 6px;cursor:pointer;font-family:var(--mono);
   font-size:clamp(10px,3.1vw,11.5px);letter-spacing:.14em;font-weight:700;color:#221f1a;
@@ -172,8 +174,16 @@ input{-webkit-user-select:text;user-select:text}
 .nm input{width:100%;font:inherit;padding:5px 6px;border:1px solid var(--btn);border-radius:4px;background:#fff;color:inherit}
 .dur{flex:0 0 auto;font-size:12px;color:#6c6455;font-variant-numeric:tabular-nums}
 .meta{font-size:clamp(9.5px,2.9vw,10.5px);color:#8c8474;margin-top:4px;letter-spacing:.04em}
-.seek{height:8px;margin:10px 0 2px;border-radius:4px;background:#cfc7b5;cursor:pointer;overflow:hidden}
-.seek i{display:block;height:100%;width:0;background:var(--btn)}
+.seek{position:relative;height:10px;margin:11px 0 3px;border-radius:5px;background:#c6bda8;
+  cursor:pointer;touch-action:none;box-shadow:inset 0 1px 2px rgba(0,0,0,.22)}
+.seek i{display:block;height:100%;width:0;border-radius:5px;background:#9a9078}
+.seek b{position:absolute;top:50%;left:0;width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;
+  background:var(--paper);border:2px solid #9a9078;opacity:0;transition:opacity .15s}
+.seek.live{background:#bdb39c}
+.seek.live i{background:var(--btn)}
+.seek.live b{opacity:1;border-color:var(--btn);box-shadow:0 1px 3px rgba(0,0,0,.3)}
+.times{display:flex;justify-content:space-between;font-size:10px;color:#8c8474;
+  font-variant-numeric:tabular-nums;letter-spacing:.03em}
 .acts{display:grid;grid-template-columns:repeat(auto-fit,minmax(76px,1fr));gap:6px;margin-top:9px}
 .acts button{border:1px solid var(--line);background:#f2ece0;border-radius:6px;min-height:40px;padding:6px 4px;
   font-family:var(--mono);font-size:clamp(9.5px,2.8vw,10.5px);letter-spacing:.08em;color:#3a352c;cursor:pointer}
@@ -230,8 +240,11 @@ input{-webkit-user-select:text;user-select:text}
     <button class="ptt" id="ptt" aria-label="Push to talk. Hold to record.">PUSH TO TALK<small>hold to record · release to pause</small></button>
 
     <div class="row">
-      <button class="key" id="save" disabled>SAVE TAKE</button>
-      <button class="key warn" id="scrap" disabled>SCRAP</button>
+      <button class="key wide" id="save" disabled>SAVE TAKE</button>
+    </div>
+    <div class="row">
+      <button class="key" id="undo" disabled>UNDO BURST</button>
+      <button class="key warn" id="scrap" disabled>SCRAP TAKE</button>
     </div>
 
     <div class="strip">
@@ -479,6 +492,26 @@ function makeStore(idbFactory){
       return p.catch(function(){ return []; });
     },
 
+    /* Removes the crash-backup records for an undone burst, so recovery cannot
+       bring back audio the user deliberately threw away. */
+    dropPartsFrom:function(session, fromSeq){
+      if(api.memory){
+        Array.from(mem.parts.keys()).forEach(function(k){
+          var r=mem.parts.get(k);
+          if(r && r.session===session && !r.meta && r.seq>=fromSeq) mem.parts.delete(k);
+        });
+        return Promise.resolve();
+      }
+      return run(PARTS,"readwrite",function(st){
+        var r=st.getAll();
+        r.onsuccess=function(){
+          (r.result||[]).forEach(function(rec){
+            if(rec.session===session && !rec.meta && rec.seq>=fromSeq) st.delete(rec.key);
+          });
+        };
+      }).catch(function(){});
+    },
+
     clearParts:function(session){
       if(api.memory){
         Array.from(mem.parts.keys()).forEach(function(k){ if(!session || k.indexOf(session+":")===0) mem.parts.delete(k); });
@@ -542,7 +575,7 @@ var $=function(s){ return document.querySelector(s); };
 var els={
   ptt:$("#ptt"), state:$("#state"), clock:$("#clock"), led:$("#led"), bursts:$("#bursts"), src:$("#src"),
   needle:$("#needle"), save:$("#save"), scrap:$("#scrap"), warn:$("#warn"), recover:$("#recover"),
-  list:$("#list"), count:$("#count"), used:$("#used"), bulk:$("#bulk"), player:$("#player"),
+  list:$("#list"), count:$("#count"), used:$("#used"), bulk:$("#bulk"), player:$("#player"), undo:$("#undo"),
   hifi:$("#hifi"), hifiTxt:$("#hifiTxt")
 };
 var store=Core.makeStore(window.indexedDB);
@@ -555,6 +588,7 @@ var MIME=Core.pickMime(window.MediaRecorder), EXT=Core.extFor(MIME);
 var stream=null, recStream=null, rec=null, chunks=[], ac=null, analyser=null, tap=null, buf=null;
 var lift=null, dest=null, convPct=-1;
 var inMeter=null, inBuf=null, gainNow=1, agc=40, lastTick=0;
+var marks=[], scrapArmed=0;
 var holding=false, wanted=false, armed=false, bursts=0, elapsed=0, burstAt=0;
 var session=null, seq=0, level=0, hifi=true, saving=false, flashUntil=0;
 
@@ -642,6 +676,8 @@ function paint(){
   if(holding) els.src.textContent="Boost x"+gainNow.toFixed(1);
   els.save.disabled=!armed||live<150||saving;
   els.scrap.disabled=!armed||saving;
+  els.undo.disabled=!armed||holding||saving||!marks.length;
+  if(scrapArmed && Date.now()>=scrapArmed) disarmScrap();
   els.ptt.classList.toggle("live", holding);
   els.hifi.disabled=armed;
 }
@@ -692,6 +728,15 @@ function constraints(){
   return { audio: hifi
     ? {echoCancellation:false, noiseSuppression:false, autoGainControl:false, channelCount:1, sampleRate:48000, sampleSize:16}
     : {echoCancellation:true, noiseSuppression:true, autoGainControl:true, channelCount:1} };
+}
+/* iOS keeps the audio session in record mode for as long as a microphone stream is
+   open, which routes playback to the earpiece and makes every take after the first
+   recording sound quiet. Releasing the microphone when idle restores normal output. */
+function releaseMicIfIdle(){
+  if(armed||holding) return;
+  dropStream();
+  if(ac && ac.state==="running" && ac.suspend) { try{ ac.suspend(); }catch(e){} }
+  els.src.textContent="Hold to open mic";
 }
 function dropStream(){
   if(stream){ stream.getTracks().forEach(function(t){ try{t.stop();}catch(e){} }); stream=null; }
@@ -758,6 +803,7 @@ function openMic(){
 
 function press(){
   if(holding||saving||wanted) return;
+  disarmScrap();
   wanted=true;
   els.ptt.classList.add("down");
   click(true); buzz(12);
@@ -765,7 +811,7 @@ function press(){
     if(!ok||!wanted){ els.ptt.classList.remove("down"); wanted=false; return; }
     if(holding) return;
     if(!rec){
-      chunks=[]; elapsed=0; bursts=0; seq=0;
+      chunks=[]; elapsed=0; bursts=0; seq=0; marks=[];
       session="s"+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
       try{
         rec=new MediaRecorder(recStream||stream,{mimeType:MIME, audioBitsPerSecond:128000});
@@ -788,6 +834,7 @@ function press(){
     } else if(rec.state==="paused"){
       rec.resume();
     }
+    marks.push({chunks:chunks.length, seq:seq, elapsed:elapsed});   // so this burst can be undone
     holding=true; armed=true; bursts++; burstAt=performance.now();
     store.putDraft({session:session, ms:elapsed, bursts:bursts, mime:MIME, ext:EXT, at:Date.now()});
     paint();
@@ -805,6 +852,30 @@ function release(){
   paint();
 }
 
+/* Takes back the burst you just recorded, for when a sentence comes out wrong.
+   Chunks are dropped at the boundary the burst started on, and the matching crash
+   backup records go with them so a recovery cannot resurrect them. */
+function undoBurst(){
+  if(holding||saving||!armed||!marks.length) return;
+  var m=marks.pop();
+  chunks.length=m.chunks;
+  elapsed=m.elapsed;
+  bursts=Math.max(0, bursts-1);
+  buzz(18);
+  if(session) store.dropPartsFrom(session, m.seq);
+  if(!bursts||!chunks.length){                 // nothing left, so end the take entirely
+    var sess=session;
+    if(rec){ try{ rec.onstop=null; rec.stop(); }catch(e){} rec=null; }
+    chunks=[]; elapsed=0; bursts=0; armed=false; session=null; marks=[];
+    if(sess) store.clearParts(sess);
+    releaseMicIfIdle();
+  } else {
+    store.putDraft({session:session, ms:elapsed, bursts:bursts, mime:MIME, ext:EXT, at:Date.now()});
+  }
+  disarmScrap();
+  paint();
+}
+
 function finish(keep){
   if(!rec||saving) return;
   saving=true; paint();
@@ -814,7 +885,7 @@ function finish(keep){
     rec=null; chunks=[];
     if(!keep||!parts.length){
       elapsed=0; bursts=0; armed=false; saving=false; convPct=-1; session=null;
-      store.clearParts(sess); paint(); return;
+      store.clearParts(sess); releaseMicIfIdle(); paint(); return;
     }
     new Blob(parts,{type:MIME}).arrayBuffer().then(function(ab){
       return toPortable(ab, MIME, EXT, function(p){ convPct=Math.round(p*100); paint(); });
@@ -831,6 +902,7 @@ function finish(keep){
     }).then(function(){
       elapsed=0; bursts=0; armed=false; saving=false; convPct=-1; session=null;
       flashUntil=Date.now()+2200;
+      releaseMicIfIdle();
       view="takes"; syncTabs(); render(); paint();
     }).catch(function(e){
       saving=false; convPct=-1; paint();
@@ -875,8 +947,25 @@ document.addEventListener("keydown", function(e){
 document.addEventListener("keyup", function(e){
   if(e.code==="Space"||e.key==="Enter") release();
 });
-els.save.addEventListener("click", function(){ release(); finish(true); });
-els.scrap.addEventListener("click", function(){ release(); finish(false); });
+els.save.addEventListener("click", function(){ disarmScrap(); release(); finish(true); });
+els.undo.addEventListener("click", function(){ release(); undoBurst(); });
+
+/* Scrapping throws away everything recorded, so it asks first. */
+function disarmScrap(){
+  scrapArmed=0;
+  els.scrap.classList.remove("arm");
+  els.scrap.textContent="SCRAP TAKE";
+}
+els.scrap.addEventListener("click", function(){
+  release();
+  if(!armed) return;
+  if(Date.now()<scrapArmed){ disarmScrap(); finish(false); return; }
+  scrapArmed=Date.now()+4000;
+  els.scrap.classList.add("arm");
+  els.scrap.textContent="TAP TO CONFIRM";
+  buzz(20);
+  setTimeout(function(){ if(Date.now()>=scrapArmed) disarmScrap(); },4100);
+});
 els.hifi.addEventListener("change", function(){
   hifi=els.hifi.checked;
   els.hifiTxt.textContent=hifi?"Hi-fi 48 kHz":"Voice clean-up";
@@ -886,6 +975,7 @@ els.hifi.addEventListener("change", function(){
 
 /* ---------------- library ---------------- */
 var view="takes", playing=null, url=null, editing=null, fillEl=null, fillMs=0, nodes={};
+var scrubbing=null, pendingSeek=null;
 
 function syncTabs(){
   Array.prototype.forEach.call(document.querySelectorAll(".tab"), function(t){
@@ -958,15 +1048,41 @@ function rowFor(it){
 
   var seek=document.createElement("div"); seek.className="seek";
   var fill=document.createElement("i"); seek.appendChild(fill);
-  seek.addEventListener("click", function(e){
-    if(playing!==it.id) return;
+  var knob=document.createElement("b"); seek.appendChild(knob);
+  var times=document.createElement("div"); times.className="times";
+  var atTxt=document.createElement("span"), ofTxt=document.createElement("span");
+  atTxt.textContent="0:00"; ofTxt.textContent=Core.short(it.ms);
+  times.appendChild(atTxt); times.appendChild(ofTxt);
+
+  function fractionAt(clientX){
     var r=seek.getBoundingClientRect();
-    var p=Math.min(1,Math.max(0,(e.clientX-r.left)/r.width));
+    if(!r.width) return 0;
+    return Math.min(1, Math.max(0, (clientX-r.left)/r.width));
+  }
+  function seekTo(p){
     var d=els.player.duration;
-    try{ els.player.currentTime=p*((isFinite(d)&&d>0)?d:it.ms/1000); }catch(err){}
+    var total=(isFinite(d)&&d>0)?d:it.ms/1000;
+    try{ els.player.currentTime=p*total; }catch(err){}
+    fill.style.width=(p*100)+"%"; knob.style.left=(p*100)+"%";
+    atTxt.textContent=Core.short(p*total*1000);
+  }
+  seek.addEventListener("pointerdown", function(e){
+    e.preventDefault();
+    var p=fractionAt(e.clientX);
+    if(playing!==it.id){ pendingSeek=p; toggle(it); return; }   // tap anywhere to play from there
+    scrubbing=it.id;
+    try{ seek.setPointerCapture(e.pointerId); }catch(err){}
+    seekTo(p);
   });
-  nodes[it.id]={fill:fill, ms:it.ms};
-  if(playing===it.id){ fillEl=fill; fillMs=it.ms; }
+  seek.addEventListener("pointermove", function(e){
+    if(scrubbing===it.id) seekTo(fractionAt(e.clientX));
+  });
+  function endScrub(){ if(scrubbing===it.id) scrubbing=null; }
+  seek.addEventListener("pointerup", endScrub);
+  seek.addEventListener("pointercancel", endScrub);
+
+  nodes[it.id]={fill:fill, knob:knob, at:atTxt, seek:seek, ms:it.ms};
+  if(playing===it.id){ fillEl=fill; fillMs=it.ms; seek.classList.add("live"); }
 
   var acts=document.createElement("div"); acts.className="acts";
   function add(label, cls, fn){
@@ -997,7 +1113,7 @@ function rowFor(it){
     });
   }
 
-  el.appendChild(t1); el.appendChild(meta); el.appendChild(seek); el.appendChild(acts);
+  el.appendChild(t1); el.appendChild(meta); el.appendChild(seek); el.appendChild(times); el.appendChild(acts);
   return el;
 }
 
@@ -1009,7 +1125,12 @@ function setPlayUI(){
   Object.keys(nodes).forEach(function(id){
     var n=nodes[id];
     if(n.PLAY) n.PLAY.textContent = (playing===id) ? "STOP" : "PLAY";
-    if(n.fill && playing!==id) n.fill.style.width="0%";
+    if(n.seek) n.seek.classList.toggle("live", playing===id);
+    if(playing!==id){
+      if(n.fill) n.fill.style.width="0%";
+      if(n.knob) n.knob.style.left="0%";
+      if(n.at) n.at.textContent="0:00";
+    }
   });
   if(playing && nodes[playing]){ fillEl=nodes[playing].fill; fillMs=nodes[playing].ms; }
   else fillEl=null;
@@ -1017,6 +1138,8 @@ function setPlayUI(){
 
 function toggle(it){
   if(playing===it.id){ els.player.pause(); playing=null; setPlayUI(); return; }
+  releaseMicIfIdle();                    // otherwise iOS plays back through the earpiece
+  els.player.volume=1;
   if(url) URL.revokeObjectURL(url);
   url=URL.createObjectURL(blobOf(it));
   playing=it.id;
@@ -1045,9 +1168,22 @@ function toggle(it){
 }
 els.player.addEventListener("ended", function(){ playing=null; setPlayUI(); });
 els.player.addEventListener("timeupdate", function(){
-  if(!playing||!fillEl) return;
-  var d=els.player.duration, total=(isFinite(d)&&d>0)?d:fillMs/1000;
-  fillEl.style.width=Math.min(100,(els.player.currentTime/total)*100)+"%";
+  if(!playing||scrubbing) return;
+  var n=nodes[playing];
+  if(!n) return;
+  var d=els.player.duration, total=(isFinite(d)&&d>0)?d:n.ms/1000;
+  var pct=Math.min(100,(els.player.currentTime/total)*100);
+  if(n.fill) n.fill.style.width=pct+"%";
+  if(n.knob) n.knob.style.left=pct+"%";
+  if(n.at) n.at.textContent=Core.short(els.player.currentTime*1000);
+});
+els.player.addEventListener("canplay", function(){
+  if(pendingSeek!==null && playing){
+    var d=els.player.duration, n=nodes[playing];
+    var total=(isFinite(d)&&d>0)?d:(n?n.ms:1000)/1000;
+    try{ els.player.currentTime=pendingSeek*total; }catch(e){}
+    pendingSeek=null;
+  }
 });
 
 /* ---------------- export ----------------

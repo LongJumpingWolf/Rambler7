@@ -50,7 +50,10 @@ group("Touch target sizes");
   ok("take actions are at least 40px", target(".acts button", 40));
   ok("library tabs are at least 34px", target(".tab", 34));
   ok("recovery buttons are at least 36px", target(".note button", 36));
-  ok("the seek bar is thick enough to grab", /\.seek\{height:8px/.test(css));
+  ok("the seek bar is thick enough to grab", /\.seek\{position:relative;height:10px/.test(css));
+  ok("it has a drag handle with a finger-sized target", /\.seek b\{[\s\S]*?width:16px;height:16px/.test(css));
+  ok("dragging it does not scroll the page", /\.seek\{[\s\S]*?touch-action:none/.test(css));
+  ok("the playing row's bar is visually distinct", /\.seek\.live i\{background:var\(--btn\)/.test(css));
   ok("take actions reflow into a grid rather than a cramped row", /\.acts\{display:grid;grid-template-columns:repeat\(auto-fit/.test(css));
 }
 

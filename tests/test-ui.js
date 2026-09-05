@@ -311,7 +311,10 @@ group("Scrapping a take");
 e = makeEnv(); await wait(80);
 e.fire(e.$("#ptt"), "pointerdown"); await wait(180);
 e.fire(e.$("#ptt"), "pointerup"); await wait(20);
-e.fire(e.$("#scrap"), "click"); await wait(120);
+e.fire(e.$("#scrap"), "click"); await wait(40);
+eq("one tap only arms the scrap, it does not throw the take away", e.$("#scrap").textContent, "TAP TO CONFIRM");
+eq("the take is still held", e.$("#state").textContent, "HELD");
+e.fire(e.$("#scrap"), "click"); await wait(150);
 eq("scrapped audio is not saved", rows(e).length, 0);
 eq("recorder returns to standby", e.$("#state").textContent, "STANDBY");
 eq("clock resets", e.$("#clock").textContent, "00:00.0");
@@ -688,6 +691,122 @@ e.fire(e.$("#save"), "click"); await wait(400);
   ok("a take that came out quiet is levelled on the way in", all[0].ext === "mp3",
      "stored as " + all[0].ext);
   ok("it still holds audio", all[0].buf.byteLength > 0);
+}
+e.dom.window.close();
+
+
+/* ================================================================== */
+group("Microphone is released when idle");
+e = makeEnv(); await wait(80);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+eq("the microphone stays open between bursts", e.state.tracksStopped, 0);
+e.fire(e.$("#save"), "click"); await wait(300);
+ok("it is released once the take is saved", e.state.tracksStopped > 0,
+   "tracks stopped: " + e.state.tracksStopped);
+eq("the display invites a new take", e.$("#src").textContent, "Hold to open mic");
+{
+  const stoppedBefore = e.state.tracksStopped;
+  e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+  ok("holding again reopens it", e.$("#state").textContent === "\u25cf RECORDING");
+  e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+  e.fire(e.$("#save"), "click"); await wait(300);
+  ok("and it is released again", e.state.tracksStopped > stoppedBefore);
+}
+clickBtn(e, rows(e)[0], "PLAY"); await wait(80);
+eq("playback sets full volume", e.$("#player").volume, 1);
+e.dom.window.close();
+
+group("Undoing a burst");
+e = makeEnv(); await wait(80);
+ok("nothing to undo before recording", e.$("#undo").disabled === true);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+ok("undo is unavailable while the button is held", e.$("#undo").disabled === true);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+ok("undo becomes available once released", e.$("#undo").disabled === false);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+eq("three bursts recorded", e.$("#bursts").textContent, "3 bursts");
+const clockAt3 = e.$("#clock").textContent;
+e.fire(e.$("#undo"), "click"); await wait(60);
+eq("undo removes the last burst", e.$("#bursts").textContent, "2 bursts");
+ok("and rolls the clock back", e.$("#clock").textContent < clockAt3, clockAt3 + " → " + e.$("#clock").textContent);
+ok("the take is still held, not ended", e.$("#state").textContent === "HELD");
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+eq("recording can continue after an undo", e.$("#bursts").textContent, "3 bursts");
+e.fire(e.$("#save"), "click"); await wait(300);
+eq("the shortened take saves", rows(e).length, 1);
+e.dom.window.close();
+
+group("Undoing every burst ends the take");
+e = makeEnv(); await wait(80);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+e.fire(e.$("#undo"), "click"); await wait(80);
+eq("the recorder returns to standby", e.$("#state").textContent, "STANDBY");
+eq("the clock resets", e.$("#clock").textContent, "00:00.0");
+eq("there is nothing to save", e.$("#save").disabled, true);
+eq("and nothing to undo", e.$("#undo").disabled, true);
+{
+  const parts = await new Promise(res => { const r = e.w.indexedDB.open("rambler7"); r.onsuccess = () => { const g = r.result.transaction("parts").objectStore("parts").getAll(); g.onsuccess = () => res(g.result); }; });
+  eq("the crash backup is cleared, so it cannot come back", parts.length, 0);
+}
+eq("no take was saved", rows(e).length, 0);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+eq("a fresh take can be started", e.$("#bursts").textContent, "1 burst");
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+e.dom.window.close();
+
+group("Scrapping asks first");
+e = makeEnv(); await wait(80);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+e.fire(e.$("#scrap"), "click"); await wait(40);
+eq("the button asks for confirmation", e.$("#scrap").textContent, "TAP TO CONFIRM");
+ok("and is visibly armed", e.$("#scrap").classList.contains("arm"));
+ok("the audio is untouched", e.$("#bursts").textContent === "1 burst");
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+eq("recording again cancels the question", e.$("#scrap").textContent, "SCRAP TAKE");
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+eq("and the take survived", e.$("#bursts").textContent, "2 bursts");
+e.fire(e.$("#scrap"), "click"); await wait(40);
+e.fire(e.$("#scrap"), "click"); await wait(200);
+eq("confirming does scrap it", e.$("#state").textContent, "STANDBY");
+eq("nothing was saved", rows(e).length, 0);
+eq("and the button is back to normal", e.$("#scrap").textContent, "SCRAP TAKE");
+e.dom.window.close();
+
+group("Progress bar");
+e = makeEnv(); await wait(80);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(300);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+e.fire(e.$("#save"), "click"); await wait(300);
+{
+  const row = rows(e)[0];
+  ok("the bar has a fill and a handle", !!row.querySelector(".seek i") && !!row.querySelector(".seek b"));
+  ok("elapsed and total times are shown", !!row.querySelector(".times"));
+  eq("total time is filled in", row.querySelectorAll(".times span")[1].textContent.length > 0, true);
+  ok("the bar is not highlighted while stopped", !row.querySelector(".seek").classList.contains("live"));
+  clickBtn(e, row, "PLAY"); await wait(100);
+  ok("it lights up during playback", rows(e)[0].querySelector(".seek").classList.contains("live"));
+  const seek = rows(e)[0].querySelector(".seek");
+  seek.getBoundingClientRect = () => ({ left: 0, width: 200, top: 0, height: 10 });
+  seek.dispatchEvent(new e.w.MouseEvent("pointerdown", { clientX: 100, bubbles: true, cancelable: true }));
+  await wait(60);
+  ok("dragging moves the fill", parseFloat(rows(e)[0].querySelector(".seek i").style.width) > 0,
+     rows(e)[0].querySelector(".seek i").style.width);
+  ok("and moves the handle with it", parseFloat(rows(e)[0].querySelector(".seek b").style.left) > 0);
+  seek.dispatchEvent(new e.w.MouseEvent("pointermove", { clientX: 160, bubbles: true, cancelable: true }));
+  await wait(40);
+  ok("the fill follows the finger", parseFloat(rows(e)[0].querySelector(".seek i").style.width) > 40);
+  seek.dispatchEvent(new e.w.MouseEvent("pointerup", { clientX: 160, bubbles: true, cancelable: true }));
+  await wait(40);
+  clickBtn(e, rows(e)[0], "STOP"); await wait(60);
+  eq("stopping resets the bar", rows(e)[0].querySelector(".seek i").style.width, "0%");
+  eq("and the elapsed readout", rows(e)[0].querySelectorAll(".times span")[0].textContent, "0:00");
 }
 e.dom.window.close();
 
