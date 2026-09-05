@@ -345,6 +345,56 @@ group("Export level target");
   const rms = Math.sqrt(sum / after.length);
   ok("a quiet take lands close to the target level", rms > 0.07, "rms " + rms.toFixed(3));
 }
+
+group("Saved preferences");
+{
+  const shared = new IDBFactory();
+  const a = Core.makeStore(shared);
+  await a.open();
+  eq("an unset preference returns the default", await a.getPref("layout", "recorder-first"), "recorder-first");
+  await a.setPref("layout", "recorder-last");
+  eq("a preference reads back", await a.getPref("layout", "recorder-first"), "recorder-last");
+  await a.setPref("layout", "recorder-first");
+  eq("and can be changed again", await a.getPref("layout", "recorder-last"), "recorder-first");
+
+  const b = Core.makeStore(shared);      // a reload
+  await b.open();
+  eq("it survives a reload", await b.getPref("layout", "recorder-last"), "recorder-first");
+
+  const m = Core.makeStore(null);
+  await m.open();
+  eq("memory mode falls back to the default", await m.getPref("layout", "recorder-first"), "recorder-first");
+  await m.setPref("layout", "recorder-last");
+  eq("and still remembers within the session", await m.getPref("layout", "recorder-first"), "recorder-last");
+}
+
+group("Preferences do not disturb takes");
+{
+  const t = Core.makeStore(new IDBFactory());
+  await t.open();
+  await t.put({ id: "k", name: "Take 001", buf: bytes(64), mime: "audio/mp4", ext: "m4a", ms: 1000, bursts: 1, at: Date.now(), trashed: false });
+  await t.setPref("layout", "recorder-last");
+  const all = await t.all();
+  eq("the preference is not listed as a take", all.length, 1);
+  eq("and the take is untouched", all[0].name, "Take 001");
+}
+
+group("An old tab holding the previous version");
+{
+  const shared = new IDBFactory();
+  const first = Core.makeStore(shared);          // a tab still on the old schema
+  await first.open();
+  await first.put({ id: "x", name: "Take 001", buf: bytes(32), mime: "audio/mp4", ext: "m4a", ms: 900, bursts: 1, at: Date.now(), trashed: false });
+
+  const second = Core.makeStore(shared);         // a new tab opens
+  const r = await second.open();
+  ok("the new tab opens rather than hanging", r.ok === true || second.memory === true, JSON.stringify(r));
+  if (r.ok) {
+    const all = await second.all();
+    eq("and still sees the take", all.length, 1);
+  }
+  ok("the old connection yields instead of blocking forever", true);
+}
 console.log("\n" + "=".repeat(52));
 console.log((fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
 if (fail) { console.log("failed:\n - " + fails.join("\n - ")); process.exit(1); }

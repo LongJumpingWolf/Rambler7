@@ -89,6 +89,13 @@ ok("drag ghosting is blocked", /addEventListener\("dragstart"/.test(html));
 group("Orientation change");
 ok("rotating releases a held burst instead of leaving it stuck", /addEventListener\("orientationchange", function\(\)\{ release\(\); \}\)/.test(html));
 ok("the modern orientation API is also covered", /screen\.orientation\.addEventListener\("change"/.test(html));
+
+group("Layout choice");
+ok("the recorder can be moved below the library", /\.app\.flip \.rig\{order:2\}/.test(css));
+ok("and the library above it", /\.app\.flip \.lib\{order:1\}/.test(css));
+ok("the control is a labelled toggle", /id="flip" aria-pressed="false"/.test(html));
+ok("its pressed state is visible", /\.tabs \.mini\[aria-pressed="true"\]\{color/.test(css));
+ok("the control does not wrap on a narrow screen", /\.tabs \.mini\{[\s\S]*?white-space:nowrap/.test(css));
 console.log("\n" + "=".repeat(52));
 console.log((fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
 if (fail) { console.log("failed:\n - " + fails.join("\n - ")); process.exit(1); }

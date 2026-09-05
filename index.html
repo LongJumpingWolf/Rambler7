@@ -164,7 +164,13 @@ input{-webkit-user-select:text;user-select:text}
 .tab.sel{color:var(--ink);border-bottom-color:var(--btn)}
 .tabs .sp{flex:1}
 .tabs .mini{border:0;background:none;font-family:var(--mono);font-size:10.5px;color:#8c8474;
-  cursor:pointer;letter-spacing:.06em;padding:6px 2px;min-height:34px}
+  cursor:pointer;letter-spacing:.06em;padding:6px 4px;min-height:34px;white-space:nowrap}
+.tabs .mini:hover{color:var(--ink)}
+.tabs .mini[aria-pressed="true"]{color:var(--btn)}
+
+/* Recorder below the library, for thumb reach on a phone. */
+.app.flip .rig{order:2}
+.app.flip .lib{order:1}
 
 .tape{padding:12px 2px;border-bottom:1px solid var(--line)}
 .tape:last-child{border-bottom:0}
@@ -262,6 +268,7 @@ input{-webkit-user-select:text;user-select:text}
       <button class="tab" data-view="trash">TRASH</button>
       <span class="sp"></span>
       <button class="mini" id="bulk" hidden>Empty trash</button>
+      <button class="mini" id="flip" aria-pressed="false">Recorder below</button>
     </div>
     <div id="list"></div>
     <div class="foot"><span id="count"></span><span id="used"></span></div>
@@ -274,7 +281,7 @@ input{-webkit-user-select:text;user-select:text}
 /* CORE:START — pure logic + storage, kept free of DOM so it can be unit tested */
 var Core = (function(){
 "use strict";
-var DB="rambler7", VER=3, TAKES="takes", PARTS="parts";
+var DB="rambler7", VER=4, TAKES="takes", PARTS="parts", PREFS="prefs";
 
 function pad(n,w){ return String(n).padStart(w,"0"); }
 
@@ -392,7 +399,7 @@ function joinBuffers(bufs){
 }
 
 function makeStore(idbFactory){
-  var db=null, memory=false, mem={takes:new Map(), parts:new Map()};
+  var db=null, memory=false, mem={takes:new Map(), parts:new Map(), prefs:new Map()};
 
   function open(){
     return new Promise(function(res){
@@ -407,6 +414,7 @@ function makeStore(idbFactory){
         var d=req.result;
         if(!d.objectStoreNames.contains(TAKES)) d.createObjectStore(TAKES,{keyPath:"id"});
         if(!d.objectStoreNames.contains(PARTS)) d.createObjectStore(PARTS,{keyPath:"key"});
+        if(!d.objectStoreNames.contains(PREFS)) d.createObjectStore(PREFS,{keyPath:"key"});
       };
       req.onsuccess=function(){
         clearTimeout(timer); db=req.result;
@@ -439,6 +447,19 @@ function makeStore(idbFactory){
   var api={
     get memory(){ return memory || !db; },
     open:open,
+
+    getPref:function(key, fallback){
+      if(api.memory) return Promise.resolve(mem.prefs.has(key)?mem.prefs.get(key):fallback);
+      var p=run(PREFS,"readonly",function(st,set){
+        var r=st.get(key); r.onsuccess=function(){ set(r.result?r.result.value:fallback); };
+      });
+      if(!p) return Promise.resolve(fallback);
+      return p.catch(function(){ return fallback; });
+    },
+    setPref:function(key, value){
+      if(api.memory){ mem.prefs.set(key,value); return Promise.resolve(); }
+      return run(PREFS,"readwrite",function(st){ st.put({key:key, value:value}); }).catch(function(){});
+    },
 
     all:function(){
       var p=run(TAKES,"readonly",function(s,set){ var r=s.getAll(); r.onsuccess=function(){ set(r.result||[]); }; });
@@ -576,6 +597,7 @@ var els={
   ptt:$("#ptt"), state:$("#state"), clock:$("#clock"), led:$("#led"), bursts:$("#bursts"), src:$("#src"),
   needle:$("#needle"), save:$("#save"), scrap:$("#scrap"), warn:$("#warn"), recover:$("#recover"),
   list:$("#list"), count:$("#count"), used:$("#used"), bulk:$("#bulk"), player:$("#player"), undo:$("#undo"),
+  app:$(".app"), flip:$("#flip"),
   hifi:$("#hifi"), hifiTxt:$("#hifiTxt")
 };
 var store=Core.makeStore(window.indexedDB);
@@ -984,6 +1006,20 @@ els.hifi.addEventListener("change", function(){
 var view="takes", playing=null, url=null, editing=null, fillEl=null, fillMs=0, nodes={};
 var scrub=null, pendingSeek=null;
 
+/* Which way round the two halves sit. On a phone the recorder is easier to reach at the
+   bottom, but that is a matter of grip and preference, so it is the reader's choice. */
+var flipped=false;
+function applyLayout(){
+  els.app.classList.toggle("flip", flipped);
+  els.flip.textContent = flipped ? "Recorder above" : "Recorder below";
+  els.flip.setAttribute("aria-pressed", flipped ? "true" : "false");
+}
+els.flip.addEventListener("click", function(){
+  flipped=!flipped;
+  applyLayout();
+  store.setPref("layout", flipped ? "recorder-last" : "recorder-first");
+});
+
 function syncTabs(){
   Array.prototype.forEach.call(document.querySelectorAll(".tab"), function(t){
     t.classList.toggle("sel", t.dataset.view===view);
@@ -1386,6 +1422,10 @@ store.open().then(function(r){
   els.recover.appendChild(p); els.recover.appendChild(box);
   els.recover.classList.add("show");
 }).then(function(){
+  return store.getPref("layout","recorder-first");
+}).then(function(pref){
+  flipped = (pref==="recorder-last");
+  applyLayout();
   syncTabs(); render(); paint();
   requestAnimationFrame(loop);
 });

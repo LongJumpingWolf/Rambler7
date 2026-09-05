@@ -648,7 +648,8 @@ group("Recordings already stuck in the app as WebM");
         mime: "audio/webm;codecs=opus", ext: "webm", ms: 9000, bursts: 2,
         at: Date.now() - 86400000, trashed: false
       });
-      tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+      tx.oncomplete = () => { r.result.close(); res(); };   // release it, or the upgrade is blocked
+      tx.onerror = () => rej(tx.error);
     };
     r.onerror = () => rej(r.error);
   });
@@ -960,6 +961,54 @@ e.fire(e.$("#save"), "click"); await wait(300);
   await wait(40);
   ok("and back the other way", p.currentTime < 9.1, "at " + p.currentTime);
 }
+e.dom.window.close();
+
+
+/* ================================================================== */
+group("Choosing where the recorder sits");
+e = makeEnv(); await wait(120);
+eq("the recorder is on top by default", e.$(".app").classList.contains("flip"), false);
+eq("the control offers to move it down", e.$("#flip").textContent, "Recorder below");
+eq("and reports it is not pressed", e.$("#flip").getAttribute("aria-pressed"), "false");
+
+e.fire(e.$("#flip"), "click"); await wait(80);
+ok("clicking moves the recorder below the library", e.$(".app").classList.contains("flip"));
+eq("the control now offers the reverse", e.$("#flip").textContent, "Recorder above");
+eq("and reports it is pressed", e.$("#flip").getAttribute("aria-pressed"), "true");
+
+e.fire(e.$("#flip"), "click"); await wait(80);
+eq("clicking again puts it back", e.$(".app").classList.contains("flip"), false);
+e.fire(e.$("#flip"), "click"); await wait(120);
+
+// recording must work in either arrangement
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+eq("recording works with the recorder below", e.$("#state").textContent, "\u25cf RECORDING");
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+e.fire(e.$("#save"), "click"); await wait(300);
+eq("and saving works", rows(e).length, 1);
+ok("the layout is still flipped afterwards", e.$(".app").classList.contains("flip"));
+const layoutIdb = e.idb;
+e.dom.window.close();
+
+{
+  const back = makeEnv({ idb: layoutIdb }); await wait(150);
+  ok("the choice is remembered on the next visit", back.$(".app").classList.contains("flip"));
+  eq("and the control reflects it", back.$("#flip").textContent, "Recorder above");
+  eq("takes are still there too", rows(back).length, 1);
+  back.fire(back.$("#flip"), "click"); await wait(80);
+  const idb2 = back.idb;
+  back.dom.window.close();
+
+  const third = makeEnv({ idb: idb2 }); await wait(150);
+  eq("switching back is remembered as well", third.$(".app").classList.contains("flip"), false);
+  third.dom.window.close();
+}
+
+group("Layout choice without storage");
+e = makeEnv({ idb: null }); await wait(150);
+eq("it defaults to the recorder on top", e.$(".app").classList.contains("flip"), false);
+e.fire(e.$("#flip"), "click"); await wait(60);
+ok("and can still be switched for the session", e.$(".app").classList.contains("flip"));
 e.dom.window.close();
 
 console.log("\n" + "=".repeat(52));

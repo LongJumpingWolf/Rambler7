@@ -1,6 +1,6 @@
 /* Rambler 7 service worker.
    Bump VERSION whenever index.html changes so clients pick up the new shell. */
-const VERSION = "v6";
+const VERSION = "v7";
 const CACHE = "rambler7-" + VERSION;
 const SHELL = [
   "/",
