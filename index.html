@@ -42,7 +42,12 @@ body{
   background-attachment:fixed;
   color:var(--ink); font-family:var(--mono); font-size:14px;
   display:flex; justify-content:center;
-  padding:clamp(10px,3vw,22px) clamp(8px,3vw,16px) calc(30px + env(safe-area-inset-bottom,0px));
+  /* The status bar and Dynamic Island sit over the page in a standalone app, so the
+     top inset is reserved rather than assumed to be zero. Sides matter in landscape. */
+  padding-top:calc(clamp(12px,3.5vw,22px) + env(safe-area-inset-top,0px));
+  padding-left:calc(clamp(8px,3vw,16px) + env(safe-area-inset-left,0px));
+  padding-right:calc(clamp(8px,3vw,16px) + env(safe-area-inset-right,0px));
+  padding-bottom:calc(30px + env(safe-area-inset-bottom,0px));
   -webkit-user-select:none; user-select:none;
 }
 input{-webkit-user-select:text;user-select:text}
@@ -136,8 +141,8 @@ input{-webkit-user-select:text;user-select:text}
 .key.warn{background:linear-gradient(180deg,#b98f86,#9a6a60);color:#241512;
   box-shadow:0 4px 0 #5f3a33,0 6px 10px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.3)}
 
-.strip{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px;
-  font-size:clamp(8.5px,2.7vw,9.5px);letter-spacing:.1em;color:#8f877a}
+.strip{display:flex;align-items:center;justify-content:space-between;gap:10px 14px;flex-wrap:wrap;
+  margin-top:14px;font-size:clamp(8.5px,2.7vw,9.5px);letter-spacing:.1em;color:#8f877a}
 .sw{display:flex;align-items:center;gap:7px;cursor:pointer;color:#cfc5b0}
 .sw input{position:absolute;opacity:0;pointer-events:none}
 .sw i{width:38px;height:20px;border-radius:10px;background:#191715;position:relative;
@@ -190,7 +195,24 @@ input{-webkit-user-select:text;user-select:text}
 .seek.live b{opacity:1;border-color:var(--btn);box-shadow:0 1px 3px rgba(0,0,0,.3)}
 .times{display:flex;justify-content:space-between;font-size:10px;color:#8c8474;
   font-variant-numeric:tabular-nums;letter-spacing:.03em}
-.acts{display:grid;grid-template-columns:repeat(auto-fit,minmax(76px,1fr));gap:6px;margin-top:9px}
+.acts{display:grid;grid-template-columns:1fr 1fr auto;gap:6px;margin-top:9px;position:relative}
+.acts.bin{grid-template-columns:1fr 1fr}
+.acts .kebab{min-width:46px;display:flex;align-items:center;justify-content:center;gap:3px}
+.acts .kebab span{width:3.5px;height:3.5px;border-radius:50%;background:#3a352c;display:block}
+.acts .kebab[aria-expanded="true"]{background:var(--ink)}
+.acts .kebab[aria-expanded="true"] span{background:var(--paper)}
+
+.menu{position:absolute;right:0;top:calc(100% + 6px);z-index:30;min-width:172px;
+  background:#fbf7ef;border:1px solid rgba(27,25,21,.22);border-radius:9px;overflow:hidden;
+  box-shadow:0 10px 26px rgba(0,0,0,.28)}
+.menu button{display:flex;align-items:center;gap:10px;width:100%;min-height:46px;
+  padding:10px 13px;border:0;border-bottom:1px solid var(--line);background:none;text-align:left;
+  font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;color:#3a352c;cursor:pointer}
+.menu button:last-child{border-bottom:0}
+.menu button:hover,.menu button:focus-visible{background:#fff}
+.menu button.danger{color:#8e3a28}
+.menu svg{width:15px;height:15px;flex:0 0 auto;fill:none;stroke:currentColor;stroke-width:1.7;
+  stroke-linecap:round;stroke-linejoin:round}
 .acts button{border:1px solid var(--line);background:#f2ece0;border-radius:6px;min-height:40px;padding:6px 4px;
   font-family:var(--mono);font-size:clamp(9.5px,2.8vw,10.5px);letter-spacing:.08em;color:#3a352c;cursor:pointer}
 .acts button:hover{background:#fff}
@@ -198,6 +220,17 @@ input{-webkit-user-select:text;user-select:text}
 .empty{padding:26px 4px 30px;text-align:center;color:#8c8474;font-size:12.5px;line-height:1.75}
 .foot{padding:11px 2px 9px;font-size:10px;color:#8c8474;letter-spacing:.06em;
   display:flex;justify-content:space-between;gap:8px}
+
+/* Installed to the home screen there is no browser chrome above the page, so it needs
+   more breathing room of its own than it does in a tab. */
+@media (display-mode:standalone),(display-mode:fullscreen){
+  body{padding-top:calc(clamp(22px,7vw,34px) + env(safe-area-inset-top,0px))}
+}
+@supports (-webkit-touch-callout:none){
+  @media (display-mode:standalone){
+    body{padding-top:calc(clamp(26px,8vw,38px) + env(safe-area-inset-top,0px))}
+  }
+}
 
 @media (min-width:860px){
   .app{max-width:900px;display:grid;grid-template-columns:1fr 1fr;align-items:start}
@@ -217,7 +250,7 @@ input{-webkit-user-select:text;user-select:text}
   <div class="rig">
     <div class="head">
       <div class="grille"></div>
-      <div class="mark"><b>RAMBLER 7</b><small>FIELD VOICE UNIT</small></div>
+      <div class="mark"><b>RAMBLER 7</b><small>FIELD VOICE UNIT · <span id="build">B?</span></small></div>
     </div>
 
     <div class="screen">
@@ -255,11 +288,12 @@ input{-webkit-user-select:text;user-select:text}
 
     <div class="strip">
       <label class="sw"><input type="checkbox" id="hifi" checked><i></i><span id="hifiTxt">Hi-fi 48 kHz</span></label>
-      <span>Space bar works too</span>
+      <label class="sw"><input type="checkbox" id="flip"><i></i><span>Recorder at bottom</span></label>
     </div>
 
     <div class="note bad" id="warn"></div>
     <div class="note tip" id="recover"></div>
+    <div class="note tip" id="repair"></div>
   </div>
 
   <div class="lib">
@@ -268,7 +302,6 @@ input{-webkit-user-select:text;user-select:text}
       <button class="tab" data-view="trash">TRASH</button>
       <span class="sp"></span>
       <button class="mini" id="bulk" hidden>Empty trash</button>
-      <button class="mini" id="flip" aria-pressed="false">Recorder below</button>
     </div>
     <div id="list"></div>
     <div class="foot"><span id="count"></span><span id="used"></span></div>
@@ -388,6 +421,245 @@ function agcGain(current, rms, dt, ceiling){
   var tc = (want<cur) ? 0.15 : 1.5;                    // duck fast, lift gently
   var step = 1-Math.exp(-(dt>0?dt:0.016)/tc);
   return cur + (want-cur)*step;
+}
+
+/* ---- fragmented MP4 to progressive MP4 ----
+   MediaRecorder writes fragmented MP4: a skeleton moov followed by moof/mdat pairs.
+   Safari plays it, but most players, chat apps and transcription services will not
+   open it. This rewrites the same AAC frames into an ordinary progressive file with
+   a real sample table, exactly like a Voice Memos recording. No re-encoding, so the
+   audio is untouched. */
+function u32(b, o) { return (b[o] << 24 | b[o + 1] << 16 | b[o + 2] << 8 | b[o + 3]) >>> 0; }
+function u64(b, o) { return u32(b, o) * 4294967296 + u32(b, o + 4); }
+function typ(b, o) { return String.fromCharCode(b[o], b[o + 1], b[o + 2], b[o + 3]); }
+
+function walk(b, start, end, fn) {
+  var o = start;
+  while (o + 8 <= end) {
+    var size = u32(b, o), t = typ(b, o + 4), hdr = 8;
+    if (size === 1) { size = u64(b, o + 8); hdr = 16; }
+    else if (size === 0) size = end - o;
+    if (size < hdr) break;
+    fn(t, o, size, o + hdr, o + size);
+    o += size;
+  }
+}
+function findBox(b, start, end, path) {
+  var want = path[0], hit = null;
+  walk(b, start, end, function (t, o, size, cs, ce) {
+    if (hit || t !== want) return;
+    hit = path.length === 1 ? { start: o, size: size, cs: cs, ce: ce } : findBox(b, cs, ce, path.slice(1));
+  });
+  return hit;
+}
+
+function box(type, payload) {
+  var len = 8, i;
+  for (i = 0; i < payload.length; i++) len += payload[i].length;
+  var out = new Uint8Array(len);
+  out[0] = (len >>> 24) & 255; out[1] = (len >>> 16) & 255; out[2] = (len >>> 8) & 255; out[3] = len & 255;
+  for (i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
+  var off = 8;
+  for (i = 0; i < payload.length; i++) { out.set(payload[i], off); off += payload[i].length; }
+  return out;
+}
+function be32(n) { return new Uint8Array([(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255]); }
+function be16(n) { return new Uint8Array([(n >>> 8) & 255, n & 255]); }
+
+function remux(buf) {
+  var b = new Uint8Array(buf);
+  var end = b.length;
+
+  var moov = null, frags = [];
+  var lastMoof = null;
+  walk(b, 0, end, function (t, o, size, cs, ce) {
+    if (t === "moov") moov = { start: o, cs: cs, ce: ce };
+    else if (t === "moof") lastMoof = { start: o, cs: cs, ce: ce };
+    else if (t === "mdat" && lastMoof) { frags.push({ moof: lastMoof, mdat: { start: o, cs: cs, ce: ce } }); lastMoof = null; }
+  });
+  if (!moov) return { err: "no moov" };
+  if (!frags.length) return { err: "not fragmented" };   // already progressive
+
+  var trak = findBox(b, moov.cs, moov.ce, ["trak"]);
+  if (!trak) return { err: "no trak" };
+  var mdhd = findBox(b, trak.cs, trak.ce, ["mdia", "mdhd"]);
+  var stsd = findBox(b, trak.cs, trak.ce, ["mdia", "minf", "stbl", "stsd"]);
+  var hdlr = findBox(b, trak.cs, trak.ce, ["mdia", "hdlr"]);
+  if (!mdhd || !stsd) return { err: "missing mdhd/stsd" };
+
+  var mv = b[mdhd.cs];                       // version
+  var timescale = mv === 1 ? u32(b, mdhd.cs + 20) : u32(b, mdhd.cs + 12);
+
+  // defaults from mvex/trex
+  // the encoder priming the source asks players to skip
+  var priming = 0;
+  var elst = findBox(b, trak.cs, trak.ce, ["edts", "elst"]);
+  if (elst) {
+    var ev = b[elst.cs], cnt = u32(b, elst.cs + 4);
+    if (cnt >= 1) priming = ev === 1 ? u64(b, elst.cs + 8 + 8) : (u32(b, elst.cs + 8 + 4) | 0);
+    if (priming < 0) priming = 0;
+  }
+
+  var trex = findBox(b, moov.cs, moov.ce, ["mvex", "trex"]);
+  var trexDur = 0, trexSize = 0;
+  if (trex) { trexDur = u32(b, trex.cs + 12); trexSize = u32(b, trex.cs + 16); }
+
+  var sizes = [], durs = [], pieces = [], total = 0;
+
+  for (var f = 0; f < frags.length; f++) {
+    var mf = frags[f].moof, md = frags[f].mdat;
+    var traf = findBox(b, mf.cs, mf.ce, ["traf"]);
+    if (!traf) continue;
+    var tfhd = findBox(b, traf.cs, traf.ce, ["tfhd"]);
+    var defDur = trexDur, defSize = trexSize, baseOffset = mf.start, baseIsMoof = true;
+    if (tfhd) {
+      var fl = u32(b, tfhd.cs) & 0xffffff, p = tfhd.cs + 8;   // version+flags, track_ID
+      if (fl & 0x000001) { baseOffset = u64(b, p); p += 8; baseIsMoof = false; }
+      if (fl & 0x000002) p += 4;
+      if (fl & 0x000008) { defDur = u32(b, p); p += 4; }
+      if (fl & 0x000010) { defSize = u32(b, p); p += 4; }
+      if (fl & 0x000020) p += 4;
+      if (fl & 0x020000) baseOffset = mf.start;
+    }
+
+    walk(b, traf.cs, traf.ce, function (tt, to, tsize, tcs, tce) {
+      if (tt !== "trun") return;
+      var flags = u32(b, tcs) & 0xffffff;
+      var count = u32(b, tcs + 4);
+      var p2 = tcs + 8, dataOff = 0;
+      if (flags & 0x000001) { dataOff = u32(b, p2) | 0; p2 += 4; }
+      if (flags & 0x000004) p2 += 4;
+      var run = baseOffset + dataOff;
+      for (var i = 0; i < count; i++) {
+        var sd = defDur, ss = defSize;
+        if (flags & 0x000100) { sd = u32(b, p2); p2 += 4; }
+        if (flags & 0x000200) { ss = u32(b, p2); p2 += 4; }
+        if (flags & 0x000400) p2 += 4;
+        if (flags & 0x000800) p2 += 4;
+        sizes.push(ss); durs.push(sd);
+        pieces.push([run, ss]);
+        run += ss; total += ss;
+      }
+    });
+  }
+  if (!sizes.length) return { err: "no samples" };
+
+  var duration = 0;
+  for (var i = 0; i < durs.length; i++) duration += durs[i];
+
+  // ---- sample tables ----
+  // stts: run-length encode identical durations
+  var runs = [];
+  for (i = 0; i < durs.length; i++) {
+    if (runs.length && runs[runs.length - 1][1] === durs[i]) runs[runs.length - 1][0]++;
+    else runs.push([1, durs[i]]);
+  }
+  var sttsBody = [new Uint8Array(4), be32(runs.length)];
+  for (i = 0; i < runs.length; i++) { sttsBody.push(be32(runs[i][0])); sttsBody.push(be32(runs[i][1])); }
+  var stts = box("stts", sttsBody);
+
+  var stszBody = [new Uint8Array(4), be32(0), be32(sizes.length)];
+  for (i = 0; i < sizes.length; i++) stszBody.push(be32(sizes[i]));
+  var stsz = box("stsz", stszBody);
+
+  // one chunk holding every sample keeps stsc and stco trivial
+  var stsc = box("stsc", [new Uint8Array(4), be32(1), be32(1), be32(sizes.length), be32(1)]);
+  var stcoPlaceholder = box("stco", [new Uint8Array(4), be32(1), be32(0)]);
+
+  var stsdBytes = b.subarray(stsd.start, stsd.start + stsd.size);
+  var stco0 = stcoPlaceholder;
+  var stbl = box("stbl", [stsdBytes, stts, stsc, stsz, stco0]);
+
+  var smhd = box("smhd", [new Uint8Array(4), be16(0), be16(0)]);
+  var dref = box("dref", [new Uint8Array(4), be32(1), box("url ", [new Uint8Array([0, 0, 0, 1])])]);
+  var dinf = box("dinf", [dref]);
+  var minf = box("minf", [smhd, dinf, stbl]);
+
+  var mdhdOut = box("mdhd", [
+    new Uint8Array(4), be32(0), be32(0), be32(timescale), be32(duration),
+    be16(0x55c4), be16(0)
+  ]);
+  var hdlrOut = hdlr ? b.subarray(hdlr.start, hdlr.start + hdlr.size)
+    : box("hdlr", [new Uint8Array(4), be32(0), new Uint8Array([0x73, 0x6f, 0x75, 0x6e]), be32(0), be32(0), be32(0), new Uint8Array([0])]);
+  var mdia = box("mdia", [mdhdOut, hdlrOut, minf]);
+
+  var movieTimescale = 1000;
+  var playable = Math.max(0, duration - priming);
+  var movieDuration = Math.round(playable / timescale * movieTimescale);
+
+  // carry the priming across, or those samples are heard at the start of the take
+  var edts = null;
+  if (priming > 0) {
+    edts = box("edts", [box("elst", [
+      new Uint8Array(4), be32(1), be32(movieDuration), be32(priming), be16(1), be16(0)
+    ])]);
+  }
+
+  var tkhd = box("tkhd", [
+    new Uint8Array([0, 0, 0, 7]), be32(0), be32(0), be32(1), be32(0), be32(movieDuration),
+    be32(0), be32(0), be16(0), be16(1), be16(0x0100), be16(0),
+    be32(0x00010000), be32(0), be32(0), be32(0), be32(0x00010000), be32(0),
+    be32(0), be32(0), be32(0x40000000), be32(0), be32(0)
+  ]);
+  var trakOut = edts ? box("trak", [tkhd, edts, mdia]) : box("trak", [tkhd, mdia]);
+  var mvhd = box("mvhd", [
+    new Uint8Array(4), be32(0), be32(0), be32(movieTimescale), be32(movieDuration),
+    be32(0x00010000), be16(0x0100), be16(0), be32(0), be32(0),
+    be32(0x00010000), be32(0), be32(0), be32(0), be32(0x00010000), be32(0),
+    be32(0), be32(0), be32(0x40000000),
+    be32(0), be32(0), be32(0), be32(0), be32(0), be32(0),
+    be32(2)
+  ]);
+  var moovOut = box("moov", [mvhd, trakOut]);
+
+  var ftyp = box("ftyp", [
+    new Uint8Array([0x4d, 0x34, 0x41, 0x20]), be32(0x200),
+    new Uint8Array([0x4d, 0x34, 0x41, 0x20]), new Uint8Array([0x6d, 0x70, 0x34, 0x32]),
+    new Uint8Array([0x69, 0x73, 0x6f, 0x6d])
+  ]);
+
+  // mdat sits after moov, so sample data begins at a known offset
+  var mdatStart = ftyp.length + moovOut.length;
+  var dataStart = mdatStart + 8;
+
+  // patch stco now that the offset is known
+  var stcoFixed = box("stco", [new Uint8Array(4), be32(1), be32(dataStart)]);
+  var stblF = box("stbl", [stsdBytes, stts, stsc, stsz, stcoFixed]);
+  var minfF = box("minf", [smhd, dinf, stblF]);
+  var mdiaF = box("mdia", [mdhdOut, hdlrOut, minfF]);
+  var trakF = edts ? box("trak", [tkhd, edts, mdiaF]) : box("trak", [tkhd, mdiaF]);
+  var moovF = box("moov", [mvhd, trakF]);
+  if (moovF.length !== moovOut.length) {
+    mdatStart = ftyp.length + moovF.length;
+    dataStart = mdatStart + 8;
+    stcoFixed = box("stco", [new Uint8Array(4), be32(1), be32(dataStart)]);
+    stblF = box("stbl", [stsdBytes, stts, stsc, stsz, stcoFixed]);
+    minfF = box("minf", [smhd, dinf, stblF]);
+    mdiaF = box("mdia", [mdhdOut, hdlrOut, minfF]);
+    trakF = box("trak", [tkhd, mdiaF]);
+    moovF = box("moov", [mvhd, trakF]);
+  }
+
+  var out = new Uint8Array(ftyp.length + moovF.length + 8 + total);
+  out.set(ftyp, 0);
+  out.set(moovF, ftyp.length);
+  var mo = ftyp.length + moovF.length;
+  var mlen = total + 8;
+  out[mo] = (mlen >>> 24) & 255; out[mo + 1] = (mlen >>> 16) & 255;
+  out[mo + 2] = (mlen >>> 8) & 255; out[mo + 3] = mlen & 255;
+  out[mo + 4] = 0x6d; out[mo + 5] = 0x64; out[mo + 6] = 0x61; out[mo + 7] = 0x74;
+  var w = mo + 8;
+  for (i = 0; i < pieces.length; i++) {
+    out.set(b.subarray(pieces[i][0], pieces[i][0] + pieces[i][1]), w);
+    w += pieces[i][1];
+  }
+  return { buf: out, samples: sizes.length, duration: playable / timescale, timescale: timescale, priming: priming };
+}
+
+function isFragmented(buf){
+  var b=new Uint8Array(buf), found=false;
+  walk(b, 0, b.length, function(t){ if(t==="moof") found=true; });
+  return found;
 }
 
 function joinBuffers(bufs){
@@ -582,7 +854,7 @@ return {
   fmt:fmt, short:short, size:size, cleanName:cleanName, fileName:fileName, nextName:nextName,
   pickMime:pickMime, extFor:extFor, joinBuffers:joinBuffers, makeStore:makeStore, recoverDraft:recoverDraft,
   levelGain:levelGain, softClip:softClip, toInt16:toInt16, needsConvert:needsConvert,
-  agcGain:agcGain
+  agcGain:agcGain, remux:remux, isFragmented:isFragmented
 };
 })();
 /* CORE:END */
@@ -597,7 +869,7 @@ var els={
   ptt:$("#ptt"), state:$("#state"), clock:$("#clock"), led:$("#led"), bursts:$("#bursts"), src:$("#src"),
   needle:$("#needle"), save:$("#save"), scrap:$("#scrap"), warn:$("#warn"), recover:$("#recover"),
   list:$("#list"), count:$("#count"), used:$("#used"), bulk:$("#bulk"), player:$("#player"), undo:$("#undo"),
-  app:$(".app"), flip:$("#flip"),
+  app:$(".app"), flip:$("#flip"), repair:$("#repair"),
   hifi:$("#hifi"), hifiTxt:$("#hifiTxt")
 };
 var store=Core.makeStore(window.indexedDB);
@@ -671,6 +943,14 @@ function measure(ab){
    re-encoded rather than left too soft to hear. */
 function toPortable(ab, mime, ext, onProgress){
   if(!Core.needsConvert(mime)){
+    /* MediaRecorder hands back fragmented MP4, which only some players open.
+       Rewriting it as a plain progressive file costs nothing and touches no audio. */
+    if(Core.isFragmented(ab)){
+      try{
+        var flat=Core.remux(ab);
+        if(flat && flat.buf && !flat.err) ab=flat.buf.buffer;
+      }catch(e){ /* keep the original rather than lose the take */ }
+    }
     return measure(ab).then(function(m){
       if(!m || m.gain < 1.6) return {buf:ab, mime:mime, ext:ext};   // already loud enough
       return loadEncoder()
@@ -810,6 +1090,7 @@ function openMic(){
     lim.attack.value=0.001; lim.release.value=0.08;
 
     dest=c.createMediaStreamDestination();
+    try{ dest.channelCount=1; dest.channelCountMode="explicit"; dest.channelInterpretation="speakers"; }catch(e){}
     analyser=c.createAnalyser(); analyser.fftSize=1024; buf=new Uint8Array(analyser.fftSize);
 
     tap.connect(hp); hp.connect(inMeter);
@@ -1011,11 +1292,10 @@ var scrub=null, pendingSeek=null;
 var flipped=false;
 function applyLayout(){
   els.app.classList.toggle("flip", flipped);
-  els.flip.textContent = flipped ? "Recorder above" : "Recorder below";
-  els.flip.setAttribute("aria-pressed", flipped ? "true" : "false");
+  els.flip.checked = flipped;
 }
-els.flip.addEventListener("click", function(){
-  flipped=!flipped;
+els.flip.addEventListener("change", function(){
+  flipped = els.flip.checked;
   applyLayout();
   store.setPref("layout", flipped ? "recorder-last" : "recorder-first");
 });
@@ -1054,6 +1334,64 @@ function render(){
     els.used.textContent=Core.size(all.reduce(function(n,x){ return n+(x.buf?x.buf.byteLength:0); },0));
   });
 }
+
+
+/* ---- the row overflow menu ---- */
+var openMenu=null;
+function icon(paths){
+  var svg=document.createElementNS("http://www.w3.org/2000/svg","svg");
+  svg.setAttribute("viewBox","0 0 24 24"); svg.setAttribute("aria-hidden","true");
+  paths.forEach(function(d){
+    var el=document.createElementNS("http://www.w3.org/2000/svg", d.c||"path");
+    if(d.c==="circle"){ el.setAttribute("cx",d.cx); el.setAttribute("cy",d.cy); el.setAttribute("r",d.r); }
+    else el.setAttribute("d",d.d);
+    svg.appendChild(el);
+  });
+  return svg;
+}
+var ICONS={
+  share:[{d:"M12 3v13"},{d:"M8 7l4-4 4 4"},{d:"M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6"}],
+  rename:[{d:"M4 20h4l10-10a2.1 2.1 0 0 0-3-3L5 17v3z"},{d:"M14 6l3 3"}],
+  trash:[{d:"M4 7h16"},{d:"M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"},{d:"M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"}]
+};
+function closeMenu(){
+  openMenu=null;
+  var m=document.querySelector(".menu");
+  if(m && m.parentNode) m.parentNode.removeChild(m);
+  Array.prototype.forEach.call(document.querySelectorAll(".kebab"), function(k){
+    k.setAttribute("aria-expanded","false");
+  });
+}
+function buildMenu(it, host, kebab){
+  var existing=document.querySelector(".menu");
+  if(existing && existing.parentNode) existing.parentNode.removeChild(existing);
+  kebab.setAttribute("aria-expanded","true");
+
+  var m=document.createElement("div");
+  m.className="menu";
+  m.setAttribute("role","menu");
+  function item(label, iconName, cls, fn){
+    var b=document.createElement("button");
+    b.setAttribute("role","menuitem");
+    b.appendChild(icon(ICONS[iconName]));
+    var t=document.createElement("span"); t.textContent=label; b.appendChild(t);
+    if(cls) b.className=cls;
+    b.addEventListener("click", function(ev){ ev.stopPropagation(); fn(b, t); });
+    m.appendChild(b);
+    nodes[it.id][label]=t;                    // so export progress can show here
+    return b;
+  }
+  item("Share","share","",function(){ share(it); });
+  item("Rename","rename","",function(){ closeMenu(); editing=it.id; render(); });
+  item("Trash","trash","danger",function(){
+    closeMenu(); stopIf(it.id); it.trashed=true;
+    store.put(it).catch(function(){ warn("That take could not be moved to the trash."); }).then(render);
+  });
+  m.addEventListener("click", function(ev){ ev.stopPropagation(); });
+  host.appendChild(m);
+}
+document.addEventListener("click", function(){ if(openMenu) closeMenu(); });
+document.addEventListener("keydown", function(e){ if(e.key==="Escape" && openMenu) closeMenu(); });
 
 function rowFor(it){
   var el=document.createElement("div"); el.className="tape";
@@ -1134,14 +1472,29 @@ function rowFor(it){
   }
   if(!it.trashed){
     add("PLAY","pri",function(){ toggle(it); }).textContent = (playing===it.id)?"STOP":"PLAY";
-    add("RENAME","",function(){ editing=it.id; render(); });
-    add("SHARE","",function(){ share(it); });
     add("DOWNLOAD","",function(){ download(it); });
-    add("TRASH","",function(){
-      stopIf(it.id); it.trashed=true;
-      store.put(it).catch(function(){ warn("That take could not be moved to the trash."); }).then(render);
+
+    /* Everything else lives behind one control, so the row stays readable on a phone. */
+    var kebab=document.createElement("button");
+    kebab.className="kebab";
+    kebab.setAttribute("aria-label","More actions for "+it.name);
+    kebab.setAttribute("aria-haspopup","true");
+    kebab.setAttribute("aria-expanded","false");
+    kebab.appendChild(document.createElement("span"));
+    kebab.appendChild(document.createElement("span"));
+    kebab.appendChild(document.createElement("span"));
+    kebab.addEventListener("click", function(ev){
+      ev.stopPropagation();
+      if(openMenu===it.id) return closeMenu();
+      openMenu=it.id;
+      buildMenu(it, acts, kebab);
     });
+    acts.appendChild(kebab);
+    nodes[it.id].kebab=kebab;
+
+    if(openMenu===it.id) setTimeout(function(){ buildMenu(it, acts, kebab); },0);
   } else {
+    acts.className="acts bin";
     add("RESTORE","pri",function(){
       it.trashed=false;
       store.put(it).catch(function(){ warn("Restore failed."); }).then(render);
@@ -1297,9 +1650,16 @@ var exportCache={};
 function exportFile(it, onProgress){
   if(exportCache[it.id]) return Promise.resolve(exportCache[it.id]);
   if(!Core.needsConvert(it.mime)){
-    return measure(it.buf).then(function(m){
+    var flatBuf=it.buf;
+    if(Core.isFragmented(it.buf)){
+      try{
+        var flat=Core.remux(it.buf);
+        if(flat && flat.buf && !flat.err) flatBuf=flat.buf.buffer;
+      }catch(e){}
+    }
+    return measure(flatBuf).then(function(m){
       if(!m || m.gain < 1.6){
-        var asis={blob:blobOf(it), name:Core.fileName(it)};   // portable and loud enough
+        var asis={blob:new Blob([flatBuf],{type:it.mime||"audio/mp4"}), name:Core.fileName(it)};
         exportCache[it.id]=asis;
         return asis;
       }
@@ -1338,7 +1698,8 @@ function withExport(it, label, fn){
 }
 
 function share(it){
-  withExport(it, "SHARE", function(out){
+  withExport(it, "Share", function(out){
+    closeMenu();
     var file;
     try{ file=new File([out.blob], out.name, {type:out.blob.type}); }
     catch(e){ return saveToDisk(out); }
@@ -1355,9 +1716,15 @@ function download(it){
 }
 
 function saveToDisk(out){
-  var u=URL.createObjectURL(out.blob);
+  /* A blob the browser recognises as playable audio gets previewed instead of saved,
+     which is why downloads opened a player on the phone. Handing over the same bytes
+     as an untyped binary stream leaves the browser nothing to preview. */
+  var raw;
+  try{ raw=new Blob([out.blob], {type:"application/octet-stream"}); }
+  catch(e){ raw=out.blob; }
+  var u=URL.createObjectURL(raw);
   var a=document.createElement("a");
-  a.href=u; a.download=out.name; a.rel="noopener";
+  a.href=u; a.download=out.name; a.rel="noopener"; a.target="_self";
   document.body.appendChild(a); a.click(); a.remove();
   /* Sandboxed frames and iOS Safari ignore the download attribute, so offer the file
      in a tab as a fallback rather than failing silently. */
@@ -1381,6 +1748,63 @@ els.bulk.addEventListener("click", function(){
     }));
   }).then(render);
 });
+
+/* ---------------- repairing older takes ----------------
+   Takes recorded before the container fix are fragmented MP4, which other apps refuse
+   to open and whose stated length counts paused time as audio. Rewriting them in place
+   is lossless and quick, so it is offered rather than done silently. */
+function repairable(all){
+  return all.filter(function(x){
+    if(!x.buf || !x.buf.byteLength) return false;
+    try{ return Core.isFragmented(x.buf); }catch(e){ return false; }
+  });
+}
+
+function offerRepair(){
+  return store.all().then(function(all){
+    var list=repairable(all);
+    if(!list.length){ els.repair.classList.remove("show"); return; }
+
+    els.repair.innerHTML="";
+    var msg=document.createElement("div");
+    msg.textContent=list.length+(list.length===1?" older take is":" older takes are")+
+      " saved in a format other apps cannot open. Repairing rewrites them so they play "+
+      "and share anywhere. The audio is not touched.";
+    var box=document.createElement("div"); box.className="acts2";
+    var go=document.createElement("button"); go.textContent="Repair "+list.length;
+    var no=document.createElement("button"); no.textContent="Not now";
+    box.appendChild(go); box.appendChild(no);
+    els.repair.appendChild(msg); els.repair.appendChild(box);
+    els.repair.classList.add("show");
+
+    no.addEventListener("click", function(){ els.repair.classList.remove("show"); });
+    go.addEventListener("click", function(){
+      go.disabled=true; no.disabled=true;
+      var done=0, failed=0;
+      (function next(){
+        if(done+failed>=list.length){
+          els.repair.classList.remove("show");
+          render();
+          if(failed) warn(failed+(failed===1?" take":" takes")+" could not be repaired. They are unchanged and still playable here.");
+          return;
+        }
+        var it=list[done+failed];
+        go.textContent="Repairing "+(done+failed+1)+" of "+list.length;
+        setTimeout(function(){
+          var flat=null;
+          try{ flat=Core.remux(it.buf); }catch(e){}
+          if(!flat || flat.err || !flat.buf){ failed++; return next(); }
+          it.buf=flat.buf.buffer;
+          /* the fragment timeline counted paused gaps as audio, so trust the samples */
+          if(flat.duration>0 && Math.abs(flat.duration*1000-it.ms)>1000) it.ms=Math.round(flat.duration*1000);
+          delete exportCache[it.id];
+          store.put(it).then(function(){ done++; next(); })
+                       .catch(function(){ failed++; next(); });
+        },0);
+      })();
+    });
+  }).catch(function(){});
+}
 
 /* ---------------- boot ---------------- */
 store.open().then(function(r){
@@ -1422,6 +1846,8 @@ store.open().then(function(r){
   els.recover.appendChild(p); els.recover.appendChild(box);
   els.recover.classList.add("show");
 }).then(function(){
+  return offerRepair();
+}).then(function(){
   return store.getPref("layout","recorder-first");
 }).then(function(pref){
   flipped = (pref==="recorder-last");
@@ -1431,13 +1857,36 @@ store.open().then(function(r){
 });
 })();
 
-/* Offline support. Only meaningful over http(s), so opening the file directly still works. */
+/* Build marker and offline support.
+   BUILD must match VERSION in sw.js. The marker is shown on the device so the running
+   version can be read at a glance rather than guessed at. */
+var BUILD = "11";
 (function(){
+  var el=document.getElementById("build");
+  if(el) el.textContent="B"+BUILD;
+
   if(!("serviceWorker" in navigator)) return;
   if(location.protocol!=="https:" && location.hostname!=="localhost" && location.hostname!=="127.0.0.1") return;
+
+  /* A cached shell used to stick around until the browser felt like replacing it, which
+     meant a deployed change could go unseen. When a new worker takes over, reload once
+     so the new build is what you are actually looking at. */
+  var hadController = !!navigator.serviceWorker.controller;
+  var reloaded = false;
+  navigator.serviceWorker.addEventListener("controllerchange", function(){
+    if(!hadController || reloaded) return;
+    reloaded = true;
+    location.reload();
+  });
+
   window.addEventListener("load", function(){
     navigator.serviceWorker.register("/sw.js").then(function(reg){
       reg.update();
+      // an installed app can sit for days without a fresh load, so check on return
+      document.addEventListener("visibilitychange", function(){
+        if(!document.hidden) reg.update();
+      });
+      setInterval(function(){ reg.update(); }, 15*60*1000);
     }).catch(function(){ /* offline support is optional, never block the app */ });
   });
 })();

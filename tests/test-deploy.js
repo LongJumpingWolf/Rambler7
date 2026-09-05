@@ -78,7 +78,7 @@ ok("cross-origin requests are left alone", /url\.origin !== self\.location\.orig
 ok("navigations try the network first so updates are picked up", /req\.mode === "navigate"[\s\S]{0,200}fetch\(req\)/.test(sw));
 ok("navigations fall back to cache when offline", /catch\(\(\) => caches\.match\("\/index\.html"\)/.test(sw));
 ok("registration is guarded to secure origins", /location\.protocol!=="https:"/.test(html));
-ok("a failed registration cannot break the app", /register\("\/sw\.js"\)[\s\S]{0,200}catch/.test(html));
+ok("a failed registration cannot break the app", /register\("\/sw\.js"\)[\s\S]{0,600}catch\(function\(\)\{ \/\* offline support is optional/.test(html));
 
 group("Storage");
 ok("recordings use IndexedDB, not browser storage that a deploy could clear",
@@ -91,7 +91,20 @@ ok("the encoder ships with the site", exists("lame.js"));
 ok("it is precached for offline export", /"\/lame\.js"/.test(sw));
 ok("it is cached hard, it never changes", /immutable/.test((vercel.headers.find(h=>h.source==="/lame.js")||{headers:[]}).headers.map(x=>x.value).join(" ")));
 ok("it is loaded on demand, not on every page load", !/<script src="lame\.js"/.test(html) && /sc\.src="lame\.js"/.test(html));
-ok("the service worker version was bumped for the new shell", /VERSION = "v7"/.test(sw));
+ok("the service worker version was bumped for the new shell", /VERSION = "v11"/.test(sw));
+
+group("Knowing which build is live");
+{
+  const swVer = (sw.match(/VERSION = "v(\d+)"/) || [])[1];
+  const htmlBuild = (html.match(/var BUILD = "(\d+)"/) || [])[1];
+  ok("the service worker declares a version", !!swVer, swVer);
+  ok("the page declares a build", !!htmlBuild, htmlBuild);
+  ok("they match, so a stale cache is visible rather than silent", htmlBuild === swVer, htmlBuild + " vs " + swVer);
+  ok("the build is shown on the device", /id="build"/.test(html));
+  ok("a new worker triggers a reload instead of waiting", /controllerchange/.test(html));
+  ok("it does not reload on first install", /hadController/.test(html));
+  ok("an installed app rechecks when brought back", /visibilitychange[\s\S]{0,120}reg\.update/.test(html));
+}
 console.log("\n" + "=".repeat(52));
 console.log((fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
 if (fail) { console.log("failed:\n - " + fails.join("\n - ")); process.exit(1); }

@@ -2,8 +2,13 @@ const fs = require("fs");
 const { JSDOM } = require("jsdom");
 const { IDBFactory } = require("fake-indexeddb");
 const { Blob: NodeBlob, File: NodeFile } = require("buffer");
+const Core = require("./core.js");
 
 const HTML = fs.readFileSync(__dirname + "/../index.html", "utf8");
+const SAMPLE = "/mnt/user-data/uploads/Take_010.m4a";
+const realFragmented = fs.existsSync(SAMPLE)
+  ? (() => { const b = fs.readFileSync(SAMPLE); return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength); })()
+  : null;
 
 let pass = 0, fail = 0; const fails = [];
 function ok(n, c, x) {
@@ -17,7 +22,7 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
 /* ---- fake capture stack ---------------------------------------------- */
 function makeEnv(opts = {}) {
   const idb = opts.idb === null ? null : (opts.idb || new IDBFactory());
-  const state = { loads: [], plays: 0, pauses: 0, revoked: [], gains: [], destStreams: 0, decoded: 0, encodedSamples: 0, encoder: null, granted: opts.granted !== false, chunkBytes: 4000, tracksStopped: 0, recorders: [], downloads: [], shared: [], vibrations: [] };
+  const state = { urlTypes: [], loads: [], plays: 0, pauses: 0, revoked: [], gains: [], destStreams: 0, decoded: 0, encodedSamples: 0, encoder: null, granted: opts.granted !== false, chunkBytes: 4000, tracksStopped: 0, recorders: [], downloads: [], shared: [], vibrations: [] };
 
   class FakeMediaRecorder {
     constructor(stream, cfg) {
@@ -107,7 +112,7 @@ function makeEnv(opts = {}) {
       w.navigator.vibrate = ms => { state.vibrations.push(ms); return true; };
       w.navigator.storage = { persist: () => Promise.resolve(true) };
       let urlN = 0;
-      w.URL.createObjectURL = () => "blob:fake" + (++urlN);
+      w.URL.createObjectURL = (b) => { state.urlTypes.push(b && b.type); return "blob:fake" + (++urlN); };
       w.URL.revokeObjectURL = u => state.revoked.push(u);
       // a media element with enough behaviour to test the transport
       Object.defineProperty(w.HTMLMediaElement.prototype, "duration", {
@@ -145,11 +150,24 @@ function makeEnv(opts = {}) {
 const rows = e => e.$$(".tape");
 const nameOf = r => r.querySelector(".nm").textContent;
 const btn = (r, label) => e2 => 0; // placeholder
+/* PLAY and DOWNLOAD sit in the row; Share, Rename and Trash live behind the kebab. */
+const MENU = { RENAME: "Rename", SHARE: "Share", TRASH: "Trash" };
 const clickBtn = (env, row, label) => {
-  const b = Array.from(row.querySelectorAll(".acts button")).find(x => x.textContent === label);
-  if (!b) throw new Error("button not found: " + label);
-  env.fire(b, "click"); return b;
+  const direct = Array.from(row.querySelectorAll(".acts > button")).find(x => x.textContent === label);
+  if (direct) { env.fire(direct, "click"); return direct; }
+  const menuLabel = MENU[label];
+  if (menuLabel) {
+    const kebab = row.querySelector(".kebab");
+    if (!kebab) throw new Error("no overflow control on row");
+    env.fire(kebab, "click");
+    const item = Array.from(row.querySelectorAll(".menu button")).find(x => x.textContent.trim() === menuLabel);
+    if (!item) throw new Error("menu item not found: " + menuLabel);
+    env.fire(item, "click");
+    return item;
+  }
+  throw new Error("button not found: " + label);
 };
+const openKebab = (env, row) => { env.fire(row.querySelector(".kebab"), "click"); return row.querySelector(".menu"); };
 
 (async () => {
 
@@ -968,17 +986,18 @@ e.dom.window.close();
 group("Choosing where the recorder sits");
 e = makeEnv(); await wait(120);
 eq("the recorder is on top by default", e.$(".app").classList.contains("flip"), false);
-eq("the control offers to move it down", e.$("#flip").textContent, "Recorder below");
-eq("and reports it is not pressed", e.$("#flip").getAttribute("aria-pressed"), "false");
+eq("the control is a switch, like the hi-fi one beside it", e.$("#flip").type, "checkbox");
+ok("it sits with the other switches on the device", !!e.$(".strip #flip"));
+ok("it has a visible label", e.$("#flip").parentNode.textContent.trim().length > 3,
+   e.$("#flip").parentNode.textContent);
+eq("and starts off", e.$("#flip").checked, false);
 
-e.fire(e.$("#flip"), "click"); await wait(80);
-ok("clicking moves the recorder below the library", e.$(".app").classList.contains("flip"));
-eq("the control now offers the reverse", e.$("#flip").textContent, "Recorder above");
-eq("and reports it is pressed", e.$("#flip").getAttribute("aria-pressed"), "true");
-
-e.fire(e.$("#flip"), "click"); await wait(80);
-eq("clicking again puts it back", e.$(".app").classList.contains("flip"), false);
-e.fire(e.$("#flip"), "click"); await wait(120);
+const flipIt = () => { e.$("#flip").checked = !e.$("#flip").checked; e.$("#flip").dispatchEvent(new e.w.Event("change", { bubbles: true })); };
+flipIt(); await wait(80);
+ok("switching it moves the recorder below the library", e.$(".app").classList.contains("flip"));
+flipIt(); await wait(80);
+eq("switching back puts it on top", e.$(".app").classList.contains("flip"), false);
+flipIt(); await wait(120);
 
 // recording must work in either arrangement
 e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
@@ -993,9 +1012,11 @@ e.dom.window.close();
 {
   const back = makeEnv({ idb: layoutIdb }); await wait(150);
   ok("the choice is remembered on the next visit", back.$(".app").classList.contains("flip"));
-  eq("and the control reflects it", back.$("#flip").textContent, "Recorder above");
+  eq("and the switch shows it as on", back.$("#flip").checked, true);
   eq("takes are still there too", rows(back).length, 1);
-  back.fire(back.$("#flip"), "click"); await wait(80);
+  back.$("#flip").checked = false;
+  back.$("#flip").dispatchEvent(new back.w.Event("change", { bubbles: true }));
+  await wait(80);
   const idb2 = back.idb;
   back.dom.window.close();
 
@@ -1007,8 +1028,200 @@ e.dom.window.close();
 group("Layout choice without storage");
 e = makeEnv({ idb: null }); await wait(150);
 eq("it defaults to the recorder on top", e.$(".app").classList.contains("flip"), false);
-e.fire(e.$("#flip"), "click"); await wait(60);
+e.$("#flip").checked = true;
+e.$("#flip").dispatchEvent(new e.w.Event("change", { bubbles: true }));
+await wait(60);
 ok("and can still be switched for the session", e.$(".app").classList.contains("flip"));
+e.dom.window.close();
+
+
+/* ================================================================== */
+group("Repairing takes recorded before the container fix");
+if (!realFragmented) {
+  ok("sample recording unavailable, repair checks skipped", true);
+} else {
+  const shared = new IDBFactory();
+  await new Promise((res, rej) => {
+    const r = shared.open("rambler7", 4);
+    r.onupgradeneeded = () => {
+      const d = r.result;
+      if (!d.objectStoreNames.contains("takes")) d.createObjectStore("takes", { keyPath: "id" });
+      if (!d.objectStoreNames.contains("parts")) d.createObjectStore("parts", { keyPath: "key" });
+      if (!d.objectStoreNames.contains("prefs")) d.createObjectStore("prefs", { keyPath: "key" });
+    };
+    r.onsuccess = () => {
+      const tx = r.result.transaction("takes", "readwrite");
+      const st = tx.objectStore("takes");
+      st.put({ id: "old1", name: "Interview", buf: realFragmented.slice(0), mime: "audio/mp4", ext: "m4a",
+               ms: 999000, bursts: 3, at: Date.now() - 200000, trashed: false });
+      st.put({ id: "old2", name: "Notes", buf: realFragmented.slice(0), mime: "audio/mp4", ext: "m4a",
+               ms: 55400, bursts: 1, at: Date.now() - 100000, trashed: false });
+      tx.oncomplete = () => { r.result.close(); res(); };
+      tx.onerror = () => rej(tx.error);
+    };
+    r.onerror = () => rej(r.error);
+  });
+
+  e = makeEnv({ idb: shared, formats: "mp4" }); await wait(250);
+  ok("the app notices takes that other apps cannot open", e.$("#repair").classList.contains("show"));
+  ok("it says how many", /2 older takes/.test(e.$("#repair").textContent), e.$("#repair").textContent);
+  ok("and promises not to touch the audio", /audio is not touched/.test(e.$("#repair").textContent));
+  eq("the takes are listed as normal in the meantime", rows(e).length, 2);
+
+  const go = Array.from(e.$("#repair").querySelectorAll("button")).find(b => /^Repair/.test(b.textContent));
+  e.fire(go, "click");
+  await wait(900);
+  ok("the offer clears once done", !e.$("#repair").classList.contains("show"));
+  {
+    const all = await new Promise(res => { const r = e.w.indexedDB.open("rambler7"); r.onsuccess = () => { const g = r.result.transaction("takes").objectStore("takes").getAll(); g.onsuccess = () => res(g.result); }; });
+    eq("both takes are still there", all.length, 2);
+    ok("neither is fragmented any more", all.every(t => !Core.isFragmented(t.buf)),
+       all.map(t => t.id + ":" + Core.isFragmented(t.buf)).join(" "));
+    ok("names are kept", all.map(t => t.name).sort().join(",") === "Interview,Notes");
+    const fixed = all.find(t => t.id === "old1");
+    ok("an overstated duration is corrected to the real audio length",
+       Math.abs(fixed.ms - 55400) < 1500, "ms now " + fixed.ms);
+    const untouched = all.find(t => t.id === "old2");
+    ok("a duration that was already right is left alone", Math.abs(untouched.ms - 55400) < 1500);
+    ok("the audio is still there", all.every(t => t.buf.byteLength > 100000));
+  }
+  e.dom.window.close();
+
+  // a second visit must not nag about takes that are already fine
+  const again = makeEnv({ idb: shared, formats: "mp4" }); await wait(250);
+  ok("it does not ask again once they are repaired", !again.$("#repair").classList.contains("show"));
+  eq("and the takes are all still listed", rows(again).length, 2);
+  again.dom.window.close();
+
+  // declining leaves everything alone
+  const shared2 = new IDBFactory();
+  await new Promise((res, rej) => {
+    const r = shared2.open("rambler7", 4);
+    r.onupgradeneeded = () => {
+      const d = r.result;
+      ["takes", "parts", "prefs"].forEach(n => {
+        if (!d.objectStoreNames.contains(n)) d.createObjectStore(n, { keyPath: n === "takes" ? "id" : "key" });
+      });
+    };
+    r.onsuccess = () => {
+      const tx = r.result.transaction("takes", "readwrite");
+      tx.objectStore("takes").put({ id: "keep", name: "Old one", buf: realFragmented.slice(0), mime: "audio/mp4",
+                                    ext: "m4a", ms: 55400, bursts: 1, at: Date.now(), trashed: false });
+      tx.oncomplete = () => { r.result.close(); res(); };
+      tx.onerror = () => rej(tx.error);
+    };
+    r.onerror = () => rej(r.error);
+  });
+  const decl = makeEnv({ idb: shared2, formats: "mp4" }); await wait(250);
+  const no = Array.from(decl.$("#repair").querySelectorAll("button")).find(b => b.textContent === "Not now");
+  decl.fire(no, "click"); await wait(80);
+  ok("declining hides the offer", !decl.$("#repair").classList.contains("show"));
+  {
+    const all = await new Promise(res => { const r = decl.w.indexedDB.open("rambler7"); r.onsuccess = () => { const g = r.result.transaction("takes").objectStore("takes").getAll(); g.onsuccess = () => res(g.result); }; });
+    ok("and changes nothing", Core.isFragmented(all[0].buf) === true);
+  }
+  ok("the take still plays and exports as before", !!decl.$(".tape"));
+  decl.dom.window.close();
+}
+
+group("Nothing to repair on a clean library");
+e = makeEnv({ formats: "mp4" }); await wait(200);
+ok("no offer is shown when every take is already fine", !e.$("#repair").classList.contains("show"));
+e.dom.window.close();
+
+
+/* ================================================================== */
+group("Downloading saves instead of previewing");
+e = makeEnv({ formats: "mp4" }); await wait(80);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+e.fire(e.$("#save"), "click"); await wait(350);
+e.state.urlTypes.length = 0;
+clickBtn(e, rows(e)[0], "DOWNLOAD"); await wait(400);
+eq("a file was produced", e.state.downloads.length, 1);
+eq("with the right filename", e.state.downloads[0], "Take_001.m4a");
+ok("handed over as a binary stream, so the browser cannot preview it",
+   e.state.urlTypes.indexOf("application/octet-stream") > -1, e.state.urlTypes.join(","));
+e.dom.window.close();
+
+group("Sharing still hands over real audio");
+e = makeEnv({ formats: "mp4" }); await wait(80);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+e.fire(e.$("#save"), "click"); await wait(350);
+e.w.navigator.canShare = () => true;
+let shareArg = null;
+e.w.navigator.share = o => { shareArg = o; return Promise.resolve(); };
+clickBtn(e, rows(e)[0], "SHARE"); await wait(400);
+ok("the sharesheet gets an audio file, not a binary blob",
+   !!shareArg && shareArg.files[0].type.indexOf("audio") === 0, shareArg && shareArg.files[0].type);
+eq("named properly", shareArg.files[0].name, "Take_001.m4a");
+ok("the menu closes once shared", !e.d.querySelector(".menu"));
+e.dom.window.close();
+
+group("The row overflow menu");
+e = makeEnv({ formats: "mp4" }); await wait(80);
+for (let k = 0; k < 2; k++) {
+  e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+  e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+  e.fire(e.$("#save"), "click"); await wait(350);
+}
+{
+  const row = rows(e)[0];
+  const direct = Array.from(row.querySelectorAll(".acts > button")).map(b => b.textContent.replace(/\s/g, ""));
+  eq("only play and download stay in the row", direct.slice(0, 2).join(","), "PLAY,DOWNLOAD");
+  ok("plus one overflow control", !!row.querySelector(".kebab"));
+  eq("which is labelled for screen readers", row.querySelector(".kebab").getAttribute("aria-haspopup"), "true");
+  eq("and reports itself closed", row.querySelector(".kebab").getAttribute("aria-expanded"), "false");
+  ok("no menu is showing yet", !e.d.querySelector(".menu"));
+
+  const menu = openKebab(e, rows(e)[0]);
+  ok("opening it shows a menu", !!menu);
+  eq("it reports itself open", rows(e)[0].querySelector(".kebab").getAttribute("aria-expanded"), "true");
+  eq("holding share, rename and trash",
+     Array.from(menu.querySelectorAll("button")).map(b => b.textContent.trim()).join(","), "Share,Rename,Trash");
+  eq("each item carries an icon", menu.querySelectorAll("button svg").length, 3);
+  ok("the menu is marked up as a menu", menu.getAttribute("role") === "menu");
+  ok("trash is marked as the destructive one", !!menu.querySelector("button.danger"));
+  ok("menu items are finger-sized", /min-height:46px/.test(HTML.slice(HTML.indexOf(".menu button{"), HTML.indexOf(".menu button{") + 200)));
+
+  // only one at a time
+  openKebab(e, rows(e)[1]); await wait(40);
+  eq("opening another row's menu closes the first", e.d.querySelectorAll(".menu").length, 1);
+
+  // dismissal
+  e.d.dispatchEvent(new e.w.MouseEvent("click", { bubbles: true }));
+  await wait(40);
+  ok("tapping elsewhere closes it", !e.d.querySelector(".menu"));
+  openKebab(e, rows(e)[0]); await wait(40);
+  e.d.dispatchEvent(new e.w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await wait(40);
+  ok("escape closes it too", !e.d.querySelector(".menu"));
+  openKebab(e, rows(e)[0]); await wait(40);
+  e.fire(rows(e)[0].querySelector(".kebab"), "click"); await wait(40);
+  ok("tapping the control again closes it", !e.d.querySelector(".menu"));
+}
+
+group("Menu actions still work");
+clickBtn(e, rows(e)[0], "RENAME"); await wait(60);
+{
+  const i4 = rows(e)[0].querySelector(".nm input");
+  ok("rename opens the editor", !!i4);
+  i4.value = "From the menu";
+  i4.dispatchEvent(new e.w.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+  await wait(80);
+}
+eq("and renames", nameOf(rows(e)[0]), "From the menu");
+clickBtn(e, rows(e)[0], "TRASH"); await wait(80);
+eq("trash from the menu works", rows(e).length, 1);
+ok("and the menu is gone afterwards", !e.d.querySelector(".menu"));
+e.fire(e.$$(".tab")[1], "click"); await wait(60);
+{
+  const binRow = rows(e)[0];
+  ok("trashed rows keep their two plain buttons instead of a menu", !binRow.querySelector(".kebab"));
+  eq("which are restore and delete",
+     Array.from(binRow.querySelectorAll(".acts button")).map(b => b.textContent).join(","), "RESTORE,DELETE FOREVER");
+}
 e.dom.window.close();
 
 console.log("\n" + "=".repeat(52));
