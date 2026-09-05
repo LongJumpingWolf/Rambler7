@@ -195,7 +195,24 @@ input{-webkit-user-select:text;user-select:text}
 .seek.live b{opacity:1;border-color:var(--btn);box-shadow:0 1px 3px rgba(0,0,0,.3)}
 .times{display:flex;justify-content:space-between;font-size:10px;color:#8c8474;
   font-variant-numeric:tabular-nums;letter-spacing:.03em}
-.acts{display:grid;grid-template-columns:repeat(auto-fit,minmax(76px,1fr));gap:6px;margin-top:9px}
+.acts{display:grid;grid-template-columns:1fr 1fr auto;gap:6px;margin-top:9px;position:relative}
+.acts.bin{grid-template-columns:1fr 1fr}
+.acts .kebab{min-width:46px;display:flex;align-items:center;justify-content:center;gap:3px}
+.acts .kebab span{width:3.5px;height:3.5px;border-radius:50%;background:#3a352c;display:block}
+.acts .kebab[aria-expanded="true"]{background:var(--ink)}
+.acts .kebab[aria-expanded="true"] span{background:var(--paper)}
+
+.menu{position:absolute;right:0;top:calc(100% + 6px);z-index:30;min-width:172px;
+  background:#fbf7ef;border:1px solid rgba(27,25,21,.22);border-radius:9px;overflow:hidden;
+  box-shadow:0 10px 26px rgba(0,0,0,.28)}
+.menu button{display:flex;align-items:center;gap:10px;width:100%;min-height:46px;
+  padding:10px 13px;border:0;border-bottom:1px solid var(--line);background:none;text-align:left;
+  font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;color:#3a352c;cursor:pointer}
+.menu button:last-child{border-bottom:0}
+.menu button:hover,.menu button:focus-visible{background:#fff}
+.menu button.danger{color:#8e3a28}
+.menu svg{width:15px;height:15px;flex:0 0 auto;fill:none;stroke:currentColor;stroke-width:1.7;
+  stroke-linecap:round;stroke-linejoin:round}
 .acts button{border:1px solid var(--line);background:#f2ece0;border-radius:6px;min-height:40px;padding:6px 4px;
   font-family:var(--mono);font-size:clamp(9.5px,2.8vw,10.5px);letter-spacing:.08em;color:#3a352c;cursor:pointer}
 .acts button:hover{background:#fff}
@@ -1318,6 +1335,64 @@ function render(){
   });
 }
 
+
+/* ---- the row overflow menu ---- */
+var openMenu=null;
+function icon(paths){
+  var svg=document.createElementNS("http://www.w3.org/2000/svg","svg");
+  svg.setAttribute("viewBox","0 0 24 24"); svg.setAttribute("aria-hidden","true");
+  paths.forEach(function(d){
+    var el=document.createElementNS("http://www.w3.org/2000/svg", d.c||"path");
+    if(d.c==="circle"){ el.setAttribute("cx",d.cx); el.setAttribute("cy",d.cy); el.setAttribute("r",d.r); }
+    else el.setAttribute("d",d.d);
+    svg.appendChild(el);
+  });
+  return svg;
+}
+var ICONS={
+  share:[{d:"M12 3v13"},{d:"M8 7l4-4 4 4"},{d:"M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6"}],
+  rename:[{d:"M4 20h4l10-10a2.1 2.1 0 0 0-3-3L5 17v3z"},{d:"M14 6l3 3"}],
+  trash:[{d:"M4 7h16"},{d:"M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"},{d:"M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"}]
+};
+function closeMenu(){
+  openMenu=null;
+  var m=document.querySelector(".menu");
+  if(m && m.parentNode) m.parentNode.removeChild(m);
+  Array.prototype.forEach.call(document.querySelectorAll(".kebab"), function(k){
+    k.setAttribute("aria-expanded","false");
+  });
+}
+function buildMenu(it, host, kebab){
+  var existing=document.querySelector(".menu");
+  if(existing && existing.parentNode) existing.parentNode.removeChild(existing);
+  kebab.setAttribute("aria-expanded","true");
+
+  var m=document.createElement("div");
+  m.className="menu";
+  m.setAttribute("role","menu");
+  function item(label, iconName, cls, fn){
+    var b=document.createElement("button");
+    b.setAttribute("role","menuitem");
+    b.appendChild(icon(ICONS[iconName]));
+    var t=document.createElement("span"); t.textContent=label; b.appendChild(t);
+    if(cls) b.className=cls;
+    b.addEventListener("click", function(ev){ ev.stopPropagation(); fn(b, t); });
+    m.appendChild(b);
+    nodes[it.id][label]=t;                    // so export progress can show here
+    return b;
+  }
+  item("Share","share","",function(){ share(it); });
+  item("Rename","rename","",function(){ closeMenu(); editing=it.id; render(); });
+  item("Trash","trash","danger",function(){
+    closeMenu(); stopIf(it.id); it.trashed=true;
+    store.put(it).catch(function(){ warn("That take could not be moved to the trash."); }).then(render);
+  });
+  m.addEventListener("click", function(ev){ ev.stopPropagation(); });
+  host.appendChild(m);
+}
+document.addEventListener("click", function(){ if(openMenu) closeMenu(); });
+document.addEventListener("keydown", function(e){ if(e.key==="Escape" && openMenu) closeMenu(); });
+
 function rowFor(it){
   var el=document.createElement("div"); el.className="tape";
   var t1=document.createElement("div"); t1.className="t1";
@@ -1397,14 +1472,29 @@ function rowFor(it){
   }
   if(!it.trashed){
     add("PLAY","pri",function(){ toggle(it); }).textContent = (playing===it.id)?"STOP":"PLAY";
-    add("RENAME","",function(){ editing=it.id; render(); });
-    add("SHARE","",function(){ share(it); });
     add("DOWNLOAD","",function(){ download(it); });
-    add("TRASH","",function(){
-      stopIf(it.id); it.trashed=true;
-      store.put(it).catch(function(){ warn("That take could not be moved to the trash."); }).then(render);
+
+    /* Everything else lives behind one control, so the row stays readable on a phone. */
+    var kebab=document.createElement("button");
+    kebab.className="kebab";
+    kebab.setAttribute("aria-label","More actions for "+it.name);
+    kebab.setAttribute("aria-haspopup","true");
+    kebab.setAttribute("aria-expanded","false");
+    kebab.appendChild(document.createElement("span"));
+    kebab.appendChild(document.createElement("span"));
+    kebab.appendChild(document.createElement("span"));
+    kebab.addEventListener("click", function(ev){
+      ev.stopPropagation();
+      if(openMenu===it.id) return closeMenu();
+      openMenu=it.id;
+      buildMenu(it, acts, kebab);
     });
+    acts.appendChild(kebab);
+    nodes[it.id].kebab=kebab;
+
+    if(openMenu===it.id) setTimeout(function(){ buildMenu(it, acts, kebab); },0);
   } else {
+    acts.className="acts bin";
     add("RESTORE","pri",function(){
       it.trashed=false;
       store.put(it).catch(function(){ warn("Restore failed."); }).then(render);
@@ -1608,7 +1698,8 @@ function withExport(it, label, fn){
 }
 
 function share(it){
-  withExport(it, "SHARE", function(out){
+  withExport(it, "Share", function(out){
+    closeMenu();
     var file;
     try{ file=new File([out.blob], out.name, {type:out.blob.type}); }
     catch(e){ return saveToDisk(out); }
@@ -1625,9 +1716,15 @@ function download(it){
 }
 
 function saveToDisk(out){
-  var u=URL.createObjectURL(out.blob);
+  /* A blob the browser recognises as playable audio gets previewed instead of saved,
+     which is why downloads opened a player on the phone. Handing over the same bytes
+     as an untyped binary stream leaves the browser nothing to preview. */
+  var raw;
+  try{ raw=new Blob([out.blob], {type:"application/octet-stream"}); }
+  catch(e){ raw=out.blob; }
+  var u=URL.createObjectURL(raw);
   var a=document.createElement("a");
-  a.href=u; a.download=out.name; a.rel="noopener";
+  a.href=u; a.download=out.name; a.rel="noopener"; a.target="_self";
   document.body.appendChild(a); a.click(); a.remove();
   /* Sandboxed frames and iOS Safari ignore the download attribute, so offer the file
      in a tab as a fallback rather than failing silently. */

@@ -52,7 +52,7 @@ npm install
 npm test
 ```
 
-603 checks across six suites, run in Node against the real `index.html`:
+639 checks across six suites, run in Node against the real `index.html`:
 
 - **core** — formatting, rename validation, filename sanitising, take numbering, and the
   storage layer against a real IndexedDB implementation. Includes 5 MB round trips,
@@ -111,6 +111,11 @@ hold the button.
 Finished takes are measured once more. Anything still noticeably quiet is levelled
 against the 99.5th percentile rather than the absolute peak, so a single cough or a knock
 on the microphone cannot hold a whole take down.
+
+**Row actions.** Play and Download stay in the row. Share, Rename and Trash fold into an
+overflow menu so the row reads clearly on a phone. Downloads hand the bytes over as an
+untyped binary stream, because a blob the browser recognises as playable audio gets
+previewed in a player instead of saved.
 
 **Older takes.** Recordings made before the container fix are still fragmented in the
 library. On startup the app counts them and offers to repair them in place, rewriting the

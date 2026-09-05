@@ -22,7 +22,7 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
 /* ---- fake capture stack ---------------------------------------------- */
 function makeEnv(opts = {}) {
   const idb = opts.idb === null ? null : (opts.idb || new IDBFactory());
-  const state = { loads: [], plays: 0, pauses: 0, revoked: [], gains: [], destStreams: 0, decoded: 0, encodedSamples: 0, encoder: null, granted: opts.granted !== false, chunkBytes: 4000, tracksStopped: 0, recorders: [], downloads: [], shared: [], vibrations: [] };
+  const state = { urlTypes: [], loads: [], plays: 0, pauses: 0, revoked: [], gains: [], destStreams: 0, decoded: 0, encodedSamples: 0, encoder: null, granted: opts.granted !== false, chunkBytes: 4000, tracksStopped: 0, recorders: [], downloads: [], shared: [], vibrations: [] };
 
   class FakeMediaRecorder {
     constructor(stream, cfg) {
@@ -112,7 +112,7 @@ function makeEnv(opts = {}) {
       w.navigator.vibrate = ms => { state.vibrations.push(ms); return true; };
       w.navigator.storage = { persist: () => Promise.resolve(true) };
       let urlN = 0;
-      w.URL.createObjectURL = () => "blob:fake" + (++urlN);
+      w.URL.createObjectURL = (b) => { state.urlTypes.push(b && b.type); return "blob:fake" + (++urlN); };
       w.URL.revokeObjectURL = u => state.revoked.push(u);
       // a media element with enough behaviour to test the transport
       Object.defineProperty(w.HTMLMediaElement.prototype, "duration", {
@@ -150,11 +150,24 @@ function makeEnv(opts = {}) {
 const rows = e => e.$$(".tape");
 const nameOf = r => r.querySelector(".nm").textContent;
 const btn = (r, label) => e2 => 0; // placeholder
+/* PLAY and DOWNLOAD sit in the row; Share, Rename and Trash live behind the kebab. */
+const MENU = { RENAME: "Rename", SHARE: "Share", TRASH: "Trash" };
 const clickBtn = (env, row, label) => {
-  const b = Array.from(row.querySelectorAll(".acts button")).find(x => x.textContent === label);
-  if (!b) throw new Error("button not found: " + label);
-  env.fire(b, "click"); return b;
+  const direct = Array.from(row.querySelectorAll(".acts > button")).find(x => x.textContent === label);
+  if (direct) { env.fire(direct, "click"); return direct; }
+  const menuLabel = MENU[label];
+  if (menuLabel) {
+    const kebab = row.querySelector(".kebab");
+    if (!kebab) throw new Error("no overflow control on row");
+    env.fire(kebab, "click");
+    const item = Array.from(row.querySelectorAll(".menu button")).find(x => x.textContent.trim() === menuLabel);
+    if (!item) throw new Error("menu item not found: " + menuLabel);
+    env.fire(item, "click");
+    return item;
+  }
+  throw new Error("button not found: " + label);
 };
+const openKebab = (env, row) => { env.fire(row.querySelector(".kebab"), "click"); return row.querySelector(".menu"); };
 
 (async () => {
 
@@ -1114,6 +1127,101 @@ if (!realFragmented) {
 group("Nothing to repair on a clean library");
 e = makeEnv({ formats: "mp4" }); await wait(200);
 ok("no offer is shown when every take is already fine", !e.$("#repair").classList.contains("show"));
+e.dom.window.close();
+
+
+/* ================================================================== */
+group("Downloading saves instead of previewing");
+e = makeEnv({ formats: "mp4" }); await wait(80);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+e.fire(e.$("#save"), "click"); await wait(350);
+e.state.urlTypes.length = 0;
+clickBtn(e, rows(e)[0], "DOWNLOAD"); await wait(400);
+eq("a file was produced", e.state.downloads.length, 1);
+eq("with the right filename", e.state.downloads[0], "Take_001.m4a");
+ok("handed over as a binary stream, so the browser cannot preview it",
+   e.state.urlTypes.indexOf("application/octet-stream") > -1, e.state.urlTypes.join(","));
+e.dom.window.close();
+
+group("Sharing still hands over real audio");
+e = makeEnv({ formats: "mp4" }); await wait(80);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+e.fire(e.$("#save"), "click"); await wait(350);
+e.w.navigator.canShare = () => true;
+let shareArg = null;
+e.w.navigator.share = o => { shareArg = o; return Promise.resolve(); };
+clickBtn(e, rows(e)[0], "SHARE"); await wait(400);
+ok("the sharesheet gets an audio file, not a binary blob",
+   !!shareArg && shareArg.files[0].type.indexOf("audio") === 0, shareArg && shareArg.files[0].type);
+eq("named properly", shareArg.files[0].name, "Take_001.m4a");
+ok("the menu closes once shared", !e.d.querySelector(".menu"));
+e.dom.window.close();
+
+group("The row overflow menu");
+e = makeEnv({ formats: "mp4" }); await wait(80);
+for (let k = 0; k < 2; k++) {
+  e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+  e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+  e.fire(e.$("#save"), "click"); await wait(350);
+}
+{
+  const row = rows(e)[0];
+  const direct = Array.from(row.querySelectorAll(".acts > button")).map(b => b.textContent.replace(/\s/g, ""));
+  eq("only play and download stay in the row", direct.slice(0, 2).join(","), "PLAY,DOWNLOAD");
+  ok("plus one overflow control", !!row.querySelector(".kebab"));
+  eq("which is labelled for screen readers", row.querySelector(".kebab").getAttribute("aria-haspopup"), "true");
+  eq("and reports itself closed", row.querySelector(".kebab").getAttribute("aria-expanded"), "false");
+  ok("no menu is showing yet", !e.d.querySelector(".menu"));
+
+  const menu = openKebab(e, rows(e)[0]);
+  ok("opening it shows a menu", !!menu);
+  eq("it reports itself open", rows(e)[0].querySelector(".kebab").getAttribute("aria-expanded"), "true");
+  eq("holding share, rename and trash",
+     Array.from(menu.querySelectorAll("button")).map(b => b.textContent.trim()).join(","), "Share,Rename,Trash");
+  eq("each item carries an icon", menu.querySelectorAll("button svg").length, 3);
+  ok("the menu is marked up as a menu", menu.getAttribute("role") === "menu");
+  ok("trash is marked as the destructive one", !!menu.querySelector("button.danger"));
+  ok("menu items are finger-sized", /min-height:46px/.test(HTML.slice(HTML.indexOf(".menu button{"), HTML.indexOf(".menu button{") + 200)));
+
+  // only one at a time
+  openKebab(e, rows(e)[1]); await wait(40);
+  eq("opening another row's menu closes the first", e.d.querySelectorAll(".menu").length, 1);
+
+  // dismissal
+  e.d.dispatchEvent(new e.w.MouseEvent("click", { bubbles: true }));
+  await wait(40);
+  ok("tapping elsewhere closes it", !e.d.querySelector(".menu"));
+  openKebab(e, rows(e)[0]); await wait(40);
+  e.d.dispatchEvent(new e.w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await wait(40);
+  ok("escape closes it too", !e.d.querySelector(".menu"));
+  openKebab(e, rows(e)[0]); await wait(40);
+  e.fire(rows(e)[0].querySelector(".kebab"), "click"); await wait(40);
+  ok("tapping the control again closes it", !e.d.querySelector(".menu"));
+}
+
+group("Menu actions still work");
+clickBtn(e, rows(e)[0], "RENAME"); await wait(60);
+{
+  const i4 = rows(e)[0].querySelector(".nm input");
+  ok("rename opens the editor", !!i4);
+  i4.value = "From the menu";
+  i4.dispatchEvent(new e.w.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+  await wait(80);
+}
+eq("and renames", nameOf(rows(e)[0]), "From the menu");
+clickBtn(e, rows(e)[0], "TRASH"); await wait(80);
+eq("trash from the menu works", rows(e).length, 1);
+ok("and the menu is gone afterwards", !e.d.querySelector(".menu"));
+e.fire(e.$$(".tab")[1], "click"); await wait(60);
+{
+  const binRow = rows(e)[0];
+  ok("trashed rows keep their two plain buttons instead of a menu", !binRow.querySelector(".kebab"));
+  eq("which are restore and delete",
+     Array.from(binRow.querySelectorAll(".acts button")).map(b => b.textContent).join(","), "RESTORE,DELETE FOREVER");
+}
 e.dom.window.close();
 
 console.log("\n" + "=".repeat(52));

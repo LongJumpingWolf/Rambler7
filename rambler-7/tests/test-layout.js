@@ -54,7 +54,7 @@ group("Touch target sizes");
   ok("it has a drag handle with a finger-sized target", /\.seek b\{[\s\S]*?width:16px;height:16px/.test(css));
   ok("dragging it does not scroll the page", /\.seek\{[\s\S]*?touch-action:none/.test(css));
   ok("the playing row's bar is visually distinct", /\.seek\.live i\{background:var\(--btn\)/.test(css));
-  ok("take actions reflow into a grid rather than a cramped row", /\.acts\{display:grid;grid-template-columns:repeat\(auto-fit/.test(css));
+  ok("take actions fit a phone row without wrapping", /\.acts\{display:grid;grid-template-columns:1fr 1fr auto/.test(css));
 }
 
 group("Orientation and large screens");
@@ -108,6 +108,16 @@ ok("iOS standalone gets more still", /@supports \(-webkit-touch-callout:none\)[\
 ok("the viewport is set to cover the whole screen", /viewport-fit=cover/.test(html));
 ok("nothing sits above the app with a fixed top offset that would ignore the inset",
    !/position:fixed;top:0/.test(css));
+
+group("Row actions");
+ok("play and download stay in the row, the rest fold away", /\.acts\{display:grid;grid-template-columns:1fr 1fr auto/.test(css));
+ok("trashed rows use a two-button row instead", /\.acts\.bin\{grid-template-columns:1fr 1fr\}/.test(css));
+ok("the overflow control is a finger-sized target", /\.acts \.kebab\{min-width:46px/.test(css));
+ok("menu rows are finger-sized too", /\.menu button\{[\s\S]*?min-height:46px/.test(css));
+ok("the menu sits above the rows below it", /\.menu\{[\s\S]*?z-index:30/.test(css));
+ok("its icons inherit the text colour", /\.menu svg\{[\s\S]*?stroke:currentColor/.test(css));
+ok("the destructive item is coloured differently", /\.menu button\.danger\{color/.test(css));
+ok("downloads are handed over as a binary stream", /application\/octet-stream/.test(html));
 console.log("\n" + "=".repeat(52));
 console.log((fail ? "\x1b[31m" : "\x1b[32m") + pass + " passed, " + fail + " failed\x1b[0m");
 if (fail) { console.log("failed:\n - " + fails.join("\n - ")); process.exit(1); }
