@@ -17,7 +17,7 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
 /* ---- fake capture stack ---------------------------------------------- */
 function makeEnv(opts = {}) {
   const idb = opts.idb === null ? null : (opts.idb || new IDBFactory());
-  const state = { gains: [], destStreams: 0, decoded: 0, encodedSamples: 0, encoder: null, granted: opts.granted !== false, chunkBytes: 4000, tracksStopped: 0, recorders: [], downloads: [], shared: [], vibrations: [] };
+  const state = { loads: [], plays: 0, pauses: 0, revoked: [], gains: [], destStreams: 0, decoded: 0, encodedSamples: 0, encoder: null, granted: opts.granted !== false, chunkBytes: 4000, tracksStopped: 0, recorders: [], downloads: [], shared: [], vibrations: [] };
 
   class FakeMediaRecorder {
     constructor(stream, cfg) {
@@ -37,7 +37,11 @@ function makeEnv(opts = {}) {
     stop() { this.state = "inactive"; setTimeout(() => this.onstop && this.onstop(), 0); }
   }
 
+  const vc = new (require("jsdom").VirtualConsole)();
+  vc.on("jsdomError", err => { if (process.env.SHOW_ERR) console.log("  \x1b[35m[page error]\x1b[0m " + (err.detail || err.message)); });
+  vc.on("error", (...a) => { if (process.env.SHOW_ERR) console.log("  \x1b[35m[console.error]\x1b[0m", ...a); });
   const dom = new JSDOM(HTML, {
+    virtualConsole: vc,
     runScripts: "dangerously",
     pretendToBeVisual: true,
     url: "https://local.test/",
@@ -102,9 +106,31 @@ function makeEnv(opts = {}) {
       };
       w.navigator.vibrate = ms => { state.vibrations.push(ms); return true; };
       w.navigator.storage = { persist: () => Promise.resolve(true) };
-      w.URL.createObjectURL = () => "blob:fake"; w.URL.revokeObjectURL = () => {};
-      w.HTMLMediaElement.prototype.play = function () { return Promise.resolve(); };
-      w.HTMLMediaElement.prototype.pause = function () {};
+      let urlN = 0;
+      w.URL.createObjectURL = () => "blob:fake" + (++urlN);
+      w.URL.revokeObjectURL = u => state.revoked.push(u);
+      // a media element with enough behaviour to test the transport
+      Object.defineProperty(w.HTMLMediaElement.prototype, "duration", {
+        configurable: true, get() { return this.__dur === undefined ? 12 : this.__dur; }
+      });
+      Object.defineProperty(w.HTMLMediaElement.prototype, "paused", {
+        configurable: true, get() { return this.__paused !== false; }
+      });
+      Object.defineProperty(w.HTMLMediaElement.prototype, "currentTime", {
+        configurable: true,
+        get() { return this.__t || 0; },
+        set(v) { this.__t = Math.max(0, Math.min(v, this.duration)); }
+      });
+      w.HTMLMediaElement.prototype.load = function () {
+        state.loads.push(this.src);
+        this.__t = 0;
+        const el = this;
+        setTimeout(() => { if (el.onloadedmetadata) el.onloadedmetadata(); if (el.oncanplay) el.oncanplay(); }, 5);
+      };
+      w.HTMLMediaElement.prototype.play = function () {
+        this.__paused = false; state.plays++; return Promise.resolve();
+      };
+      w.HTMLMediaElement.prototype.pause = function () { this.__paused = true; state.pauses++; };
       w.HTMLElement.prototype.setPointerCapture = function () {};
       const click = w.HTMLElement.prototype.click;
       w.HTMLAnchorElement.prototype.click = function () { state.downloads.push(this.getAttribute("download")); };
@@ -807,6 +833,132 @@ e.fire(e.$("#save"), "click"); await wait(300);
   clickBtn(e, rows(e)[0], "STOP"); await wait(60);
   eq("stopping resets the bar", rows(e)[0].querySelector(".seek i").style.width, "0%");
   eq("and the elapsed readout", rows(e)[0].querySelectorAll(".times span")[0].textContent, "0:00");
+}
+e.dom.window.close();
+
+
+/* ================================================================== */
+group("Starting a second take while one is playing");
+e = makeEnv(); await wait(80);
+for (let k = 0; k < 3; k++) {
+  e.fire(e.$("#ptt"), "pointerdown"); await wait(200);
+  e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+  e.fire(e.$("#save"), "click"); await wait(300);
+}
+eq("three takes to work with", rows(e).length, 3);
+
+clickBtn(e, rows(e)[0], "PLAY"); await wait(60);
+const firstSrc = e.$("#player").src;
+ok("the first take is playing", e.state.plays === 1 && !e.$("#player").paused);
+
+const pausesBefore = e.state.pauses;
+clickBtn(e, rows(e)[1], "PLAY"); await wait(80);
+ok("the outgoing take is paused before the source is swapped", e.state.pauses > pausesBefore);
+ok("the second take actually starts", e.state.plays === 2 && !e.$("#player").paused);
+ok("it loaded a different source", e.$("#player").src !== firstSrc, e.$("#player").src);
+ok("the first take's source was not revoked while it was still playing",
+   e.state.revoked.indexOf(firstSrc.replace(/^.*\//, "")) === -1 || e.state.revoked.length === 0);
+eq("only the second row shows stop", rows(e).map(r => r.querySelector(".acts button").textContent).join(","), "PLAY,STOP,PLAY");
+eq("the first row's bar was reset", rows(e)[0].querySelector(".seek i").style.width, "0%");
+
+clickBtn(e, rows(e)[2], "PLAY"); await wait(80);
+ok("a third take starts cleanly too", e.state.plays === 3 && !e.$("#player").paused);
+clickBtn(e, rows(e)[0], "PLAY"); await wait(80);
+ok("and going back to the first still works", e.state.plays === 4 && !e.$("#player").paused);
+eq("still only one row shows stop", rows(e).map(r => r.querySelector(".acts button").textContent).join(","), "STOP,PLAY,PLAY");
+
+// rapid switching must not wedge anything
+for (let k = 0; k < 6; k++) {
+  e.fire(rows(e)[k % 3].querySelector(".acts button"), "click");   // whatever it currently reads
+  await wait(30);
+}
+await wait(120);
+ok("hammering between takes leaves exactly one playing",
+   rows(e).map(r => r.querySelector(".acts button").textContent).filter(t => t === "STOP").length <= 1);
+e.dom.window.close();
+
+group("The progress bar always moves while audio plays");
+e = makeEnv(); await wait(80);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(300);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+e.fire(e.$("#save"), "click"); await wait(300);
+clickBtn(e, rows(e)[0], "PLAY"); await wait(60);
+{
+  const p = e.$("#player");
+  const bar = () => parseFloat(rows(e)[0].querySelector(".seek i").style.width) || 0;
+  p.currentTime = 3; await wait(120);
+  ok("the fill tracks playback position", bar() > 15, "width " + bar());
+  ok("the elapsed time updates", rows(e)[0].querySelectorAll(".times span")[0].textContent !== "0:00");
+  p.currentTime = 9; await wait(120);
+  ok("and keeps tracking", bar() > 60, "width " + bar());
+
+  // an interrupted drag used to leave the bar frozen for the rest of the session
+  const seek = rows(e)[0].querySelector(".seek");
+  seek.getBoundingClientRect = () => ({ left: 0, width: 200, top: 0, height: 10 });
+  seek.dispatchEvent(new e.w.MouseEvent("pointerdown", { clientX: 50, bubbles: true, cancelable: true }));
+  await wait(40);
+  e.d.dispatchEvent(new e.w.MouseEvent("pointerup", { clientX: 50, bubbles: true, cancelable: true }));
+  await wait(40);
+  p.currentTime = 11; await wait(120);
+  ok("the bar resumes after a drag ends off the bar", bar() > 80, "width " + bar());
+
+  // a drag interrupted by a re-render must not freeze it either
+  seek.dispatchEvent(new e.w.MouseEvent("pointerdown", { clientX: 100, bubbles: true, cancelable: true }));
+  await wait(30);
+  clickBtn(e, rows(e)[0], "RENAME"); await wait(40);
+  const inp2 = rows(e)[0].querySelector(".nm input");
+  inp2.dispatchEvent(new e.w.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  await wait(80);
+  p.currentTime = 6; await wait(150);
+  ok("a re-render during a drag does not freeze the bar", parseFloat(rows(e)[0].querySelector(".seek i").style.width) > 30,
+     "width " + rows(e)[0].querySelector(".seek i").style.width);
+}
+e.dom.window.close();
+
+group("Dragging the progress bar");
+e = makeEnv(); await wait(80);
+e.fire(e.$("#ptt"), "pointerdown"); await wait(300);
+e.fire(e.$("#ptt"), "pointerup"); await wait(20);
+e.fire(e.$("#save"), "click"); await wait(300);
+{
+  const seek = () => rows(e)[0].querySelector(".seek");
+  seek().getBoundingClientRect = () => ({ left: 0, width: 200, top: 0, height: 10 });
+  const p = e.$("#player");
+
+  // dragging on a stopped take starts it at that point
+  seek().dispatchEvent(new e.w.MouseEvent("pointerdown", { clientX: 100, bubbles: true, cancelable: true }));
+  await wait(80);
+  ok("dragging a stopped take starts playback", !p.paused);
+  ok("and starts it where you pressed", Math.abs(p.currentTime - 6) < 1.5, "at " + p.currentTime);
+
+  // the drag continues even when the finger leaves the bar
+  const s2 = rows(e)[0].querySelector(".seek");
+  s2.getBoundingClientRect = () => ({ left: 0, width: 200, top: 0, height: 10 });
+  s2.dispatchEvent(new e.w.MouseEvent("pointerdown", { clientX: 20, bubbles: true, cancelable: true }));
+  await wait(30);
+  e.d.dispatchEvent(new e.w.MouseEvent("pointermove", { clientX: 150, bubbles: true, cancelable: true }));
+  await wait(40);
+  ok("the position follows a move outside the bar", Math.abs(p.currentTime - 9) < 1.5, "at " + p.currentTime);
+  e.d.dispatchEvent(new e.w.MouseEvent("pointermove", { clientX: 400, bubbles: true, cancelable: true }));
+  await wait(40);
+  ok("dragging past the end clamps to the end", p.currentTime <= p.duration, "at " + p.currentTime);
+  e.d.dispatchEvent(new e.w.MouseEvent("pointermove", { clientX: -80, bubbles: true, cancelable: true }));
+  await wait(40);
+  ok("and past the start clamps to zero", p.currentTime >= 0 && p.currentTime < 1, "at " + p.currentTime);
+  e.d.dispatchEvent(new e.w.MouseEvent("pointerup", { clientX: -80, bubbles: true, cancelable: true }));
+  await wait(40);
+
+  // keyboard
+  const s3 = rows(e)[0].querySelector(".seek");
+  eq("the bar reports itself as a slider", s3.getAttribute("role"), "slider");
+  ok("with a live position for screen readers", s3.getAttribute("aria-valuenow") !== null);
+  p.currentTime = 4;
+  s3.dispatchEvent(new e.w.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }));
+  await wait(40);
+  ok("arrow keys nudge the position", p.currentTime > 4, "at " + p.currentTime);
+  s3.dispatchEvent(new e.w.KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }));
+  await wait(40);
+  ok("and back the other way", p.currentTime < 9.1, "at " + p.currentTime);
 }
 e.dom.window.close();
 

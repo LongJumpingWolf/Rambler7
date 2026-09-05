@@ -704,6 +704,13 @@ function loop(){
   } else level*=0.88;
   var deg=-52+level*104+(holding?(Math.random()-0.5)*3:0);
   els.needle.style.transform="rotate("+deg.toFixed(1)+"deg)";
+
+  /* Progress is driven from here rather than from timeupdate, which fires only a few
+     times a second and stops entirely if the element stalls. */
+  if(playing && !scrub && !els.player.paused){
+    var tot=totalOf(playing);
+    if(tot>0) paintProgress(els.player.currentTime/tot);
+  }
   paint();
   requestAnimationFrame(loop);
 }
@@ -975,7 +982,7 @@ els.hifi.addEventListener("change", function(){
 
 /* ---------------- library ---------------- */
 var view="takes", playing=null, url=null, editing=null, fillEl=null, fillMs=0, nodes={};
-var scrubbing=null, pendingSeek=null;
+var scrub=null, pendingSeek=null;
 
 function syncTabs(){
   Array.prototype.forEach.call(document.querySelectorAll(".tab"), function(t){
@@ -998,7 +1005,7 @@ function render(){
   return store.all().then(function(all){
     all.sort(function(a,b){ return b.at-a.at; });
     var rows=all.filter(function(x){ return !!x.trashed===(view==="trash"); });
-    fillEl=null; nodes={};
+    fillEl=null; nodes={}; scrub=null;
     els.list.innerHTML="";
     if(!rows.length){
       var p=document.createElement("p"); p.className="empty";
@@ -1054,32 +1061,29 @@ function rowFor(it){
   atTxt.textContent="0:00"; ofTxt.textContent=Core.short(it.ms);
   times.appendChild(atTxt); times.appendChild(ofTxt);
 
-  function fractionAt(clientX){
-    var r=seek.getBoundingClientRect();
-    if(!r.width) return 0;
-    return Math.min(1, Math.max(0, (clientX-r.left)/r.width));
-  }
-  function seekTo(p){
-    var d=els.player.duration;
-    var total=(isFinite(d)&&d>0)?d:it.ms/1000;
-    try{ els.player.currentTime=p*total; }catch(err){}
-    fill.style.width=(p*100)+"%"; knob.style.left=(p*100)+"%";
-    atTxt.textContent=Core.short(p*total*1000);
-  }
+  seek.setAttribute("role","slider");
+  seek.setAttribute("aria-label","Playback position");
+  seek.setAttribute("aria-valuemin","0");
+  seek.setAttribute("aria-valuemax","100");
+  seek.setAttribute("aria-valuenow","0");
+  seek.tabIndex=0;
+
   seek.addEventListener("pointerdown", function(e){
     e.preventDefault();
-    var p=fractionAt(e.clientX);
-    if(playing!==it.id){ pendingSeek=p; toggle(it); return; }   // tap anywhere to play from there
-    scrubbing=it.id;
+    var frac=fracFrom(seek, e.clientX);
     try{ seek.setPointerCapture(e.pointerId); }catch(err){}
-    seekTo(p);
+    scrub={id:it.id, el:seek};
+    if(playing!==it.id) startPlay(it, frac);   // tap or drag anywhere starts it there
+    else seekTo(frac);
   });
-  seek.addEventListener("pointermove", function(e){
-    if(scrubbing===it.id) seekTo(fractionAt(e.clientX));
+  seek.addEventListener("keydown", function(e){
+    var d = e.key==="ArrowRight" ? 5 : e.key==="ArrowLeft" ? -5 : 0;
+    if(!d) return;
+    e.preventDefault();
+    if(playing!==it.id) return startPlay(it, 0);
+    var t=totalOf(it.id);
+    seekTo((els.player.currentTime + d) / t);
   });
-  function endScrub(){ if(scrubbing===it.id) scrubbing=null; }
-  seek.addEventListener("pointerup", endScrub);
-  seek.addEventListener("pointercancel", endScrub);
 
   nodes[it.id]={fill:fill, knob:knob, at:atTxt, seek:seek, ms:it.ms};
   if(playing===it.id){ fillEl=fill; fillMs=it.ms; seek.classList.add("live"); }
@@ -1117,7 +1121,7 @@ function rowFor(it){
   return el;
 }
 
-function stopIf(id){ if(playing===id){ els.player.pause(); playing=null; } }
+function stopIf(id){ if(playing===id) stopPlayback(); }
 
 /* Updates just the affected rows. Re-rendering the whole list on every play or pause
    rebuilt the progress bar mid-playback, which is what made the transport stutter. */
@@ -1126,65 +1130,126 @@ function setPlayUI(){
     var n=nodes[id];
     if(n.PLAY) n.PLAY.textContent = (playing===id) ? "STOP" : "PLAY";
     if(n.seek) n.seek.classList.toggle("live", playing===id);
-    if(playing!==id){
-      if(n.fill) n.fill.style.width="0%";
-      if(n.knob) n.knob.style.left="0%";
-      if(n.at) n.at.textContent="0:00";
-    }
+    if(playing!==id) resetBar(n);
   });
-  if(playing && nodes[playing]){ fillEl=nodes[playing].fill; fillMs=nodes[playing].ms; }
-  else fillEl=null;
+}
+function resetBar(n){
+  if(!n) return;
+  if(n.fill) n.fill.style.width="0%";
+  if(n.knob) n.knob.style.left="0%";
+  if(n.at) n.at.textContent="0:00";
+  if(n.seek) n.seek.setAttribute("aria-valuenow","0");
 }
 
-function toggle(it){
-  if(playing===it.id){ els.player.pause(); playing=null; setPlayUI(); return; }
-  releaseMicIfIdle();                    // otherwise iOS plays back through the earpiece
-  els.player.volume=1;
-  if(url) URL.revokeObjectURL(url);
-  url=URL.createObjectURL(blobOf(it));
-  playing=it.id;
-  setPlayUI();
-
-  var begin=function(){
-    els.player.play().catch(function(){
-      playing=null; setPlayUI();
-      warn("Playback was blocked. Tap PLAY again.");
-    });
-  };
-  /* Recorded WebM often reports an unknown duration. Resolving it before playing,
-     rather than seeking after playback has already started, removes the stutter. */
-  els.player.onloadedmetadata=function(){
-    els.player.onloadedmetadata=null;
-    if(isFinite(els.player.duration) && els.player.duration>0) return begin();
-    els.player.ontimeupdate=function(){
-      els.player.ontimeupdate=null;
-      try{ els.player.currentTime=0; }catch(e){}
-      begin();
-    };
-    try{ els.player.currentTime=1e101; }catch(e){ begin(); }
-  };
-  els.player.src=url;
-  els.player.load();
+function totalOf(id){
+  var d=els.player.duration, n=nodes[id];
+  if(isFinite(d)&&d>0) return d;
+  return ((n&&n.ms)||1000)/1000;
 }
-els.player.addEventListener("ended", function(){ playing=null; setPlayUI(); });
-els.player.addEventListener("timeupdate", function(){
-  if(!playing||scrubbing) return;
+function paintProgress(frac){
   var n=nodes[playing];
   if(!n) return;
-  var d=els.player.duration, total=(isFinite(d)&&d>0)?d:n.ms/1000;
-  var pct=Math.min(100,(els.player.currentTime/total)*100);
+  var pct=Math.max(0,Math.min(100,frac*100));
   if(n.fill) n.fill.style.width=pct+"%";
   if(n.knob) n.knob.style.left=pct+"%";
-  if(n.at) n.at.textContent=Core.short(els.player.currentTime*1000);
-});
-els.player.addEventListener("canplay", function(){
-  if(pendingSeek!==null && playing){
-    var d=els.player.duration, n=nodes[playing];
-    var total=(isFinite(d)&&d>0)?d:(n?n.ms:1000)/1000;
-    try{ els.player.currentTime=pendingSeek*total; }catch(e){}
-    pendingSeek=null;
+  if(n.at) n.at.textContent=Core.short(frac*totalOf(playing)*1000);
+  if(n.seek) n.seek.setAttribute("aria-valuenow",Math.round(pct));
+}
+function seekTo(frac){
+  if(!playing) return;
+  frac=Math.max(0,Math.min(1,frac));
+  try{ els.player.currentTime=frac*totalOf(playing); }catch(e){}
+  paintProgress(frac);
+}
+
+/* Detaches every handler and stops the element before its source is thrown away.
+   Revoking a URL that is still playing kills the element mid-decode, which is what
+   broke the next take you tried to start. */
+function detach(){
+  var p=els.player;
+  p.onloadedmetadata=null; p.ontimeupdate=null; p.onerror=null; p.oncanplay=null;
+  try{ p.pause(); }catch(e){}
+}
+function stopPlayback(){
+  detach();
+  var was=playing;
+  playing=null; scrub=null; pendingSeek=null;
+  if(was && nodes[was]) resetBar(nodes[was]);
+  setPlayUI();
+}
+
+function startPlay(it, at){
+  detach();                              // stop the outgoing take cleanly first
+  releaseMicIfIdle();                    // otherwise iOS plays back through the earpiece
+
+  var prev=url;
+  url=URL.createObjectURL(blobOf(it));
+  playing=it.id;
+  pendingSeek=(typeof at==="number") ? at : null;
+  setPlayUI();
+
+  var p=els.player;
+  p.volume=1;
+  p.onerror=function(){
+    playing=null; setPlayUI();
+    warn("That take could not be played. It may have been recorded in a format this browser cannot open.");
+  };
+  var begun=false;
+  function begin(){
+    if(begun) return;
+    begun=true;
+    if(pendingSeek!==null){
+      try{ p.currentTime=pendingSeek*totalOf(it.id); }catch(e){}
+      pendingSeek=null;
+    }
+    p.play().catch(function(){
+      playing=null; setPlayUI();
+      warn("Playback was blocked. Tap play again.");
+    });
   }
-});
+  /* Recorded WebM often reports an unknown duration. Resolving it before playing,
+     rather than seeking after playback has started, removes the stutter. */
+  p.onloadedmetadata=function(){
+    p.onloadedmetadata=null;
+    if(isFinite(p.duration) && p.duration>0) return begin();
+    p.ontimeupdate=function(){
+      p.ontimeupdate=null;
+      try{ p.currentTime=0; }catch(e){}
+      begin();
+    };
+    try{ p.currentTime=1e101; }catch(e){ begin(); }
+  };
+  p.oncanplay=begin;                     // safety net if metadata never arrives
+  p.src=url;
+  p.load();
+
+  // only now is the old source safe to release
+  if(prev) setTimeout(function(){ try{ URL.revokeObjectURL(prev); }catch(e){} }, 1500);
+}
+
+function toggle(it, at){
+  if(playing===it.id && typeof at!=="number"){ stopPlayback(); return; }
+  startPlay(it, at);
+}
+els.player.addEventListener("ended", function(){ stopPlayback(); });
+
+/* Dragging is tracked on the document, so the bar keeps following your finger even
+   when it leaves the bar, and a release anywhere always ends the drag. */
+function fracFrom(el, clientX){
+  var r=el.getBoundingClientRect();
+  if(!r.width) return 0;
+  return Math.min(1, Math.max(0, (clientX-r.left)/r.width));
+}
+function onScrubMove(e){
+  if(!scrub) return;
+  e.preventDefault();
+  seekTo(fracFrom(scrub.el, e.clientX));
+}
+function endScrub(){ scrub=null; }
+document.addEventListener("pointermove", onScrubMove, {passive:false});
+document.addEventListener("pointerup", endScrub);
+document.addEventListener("pointercancel", endScrub);
+window.addEventListener("blur", endScrub);
 
 /* ---------------- export ----------------
    Takes are recorded as m4a wherever the browser allows it, so no conversion is needed.
@@ -1192,11 +1257,7 @@ els.player.addEventListener("canplay", function(){
    sitting in the library as WebM are converted the first time they are shared. */
 var exportCache={};
 
-
-
-/* Encodes in slices with a yield between them so the interface stays responsive. */
-
-/* Returns a file every phone and chat app can actually open. */
+/* Returns a file every phone and chat app can actually open, at a sensible level. */
 function exportFile(it, onProgress){
   if(exportCache[it.id]) return Promise.resolve(exportCache[it.id]);
   if(!Core.needsConvert(it.mime)){
@@ -1225,11 +1286,12 @@ function exportFile(it, onProgress){
     });
 }
 
+/* Shows conversion progress on the button that was pressed. */
 function withExport(it, label, fn){
   var node=nodes[it.id] && nodes[it.id][label];
   var restore=node ? node.textContent : null;
   if(node){ node.disabled=true; node.textContent="0%"; }
-  var show=function(p){ if(node) node.textContent=Math.round(p*100)+"%"; };
+  var show=function(pr){ if(node) node.textContent=Math.round(pr*100)+"%"; };
   return exportFile(it, show).then(function(out){
     if(node){ node.disabled=false; node.textContent=restore; }
     fn(out);

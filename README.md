@@ -52,7 +52,7 @@ npm install
 npm test
 ```
 
-443 checks across five suites, run in Node against the real `index.html`:
+469 checks across five suites, run in Node against the real `index.html`:
 
 - **core** — formatting, rename validation, filename sanitising, take numbering, and the
   storage layer against a real IndexedDB implementation. Includes 5 MB round trips,
@@ -73,6 +73,13 @@ Releasing calls `pause()`, the next hold calls `resume()`. The recorder closes o
 you press Save, so all bursts land in a single file. Undo burst takes back the last one
 if a sentence came out wrong, dropping its chunks and its crash-backup records together.
 Scrapping the whole take asks for a second tap first.
+
+**Transport.** One `<audio>` element serves the whole library. Switching takes detaches
+every handler and pauses the element before the source is swapped, and the outgoing blob
+URL is only revoked once the new one is loaded, since revoking a URL that is still
+playing kills the element mid-decode. The progress bar is driven from the animation loop
+rather than from `timeupdate`, so it cannot stall, and dragging is tracked on the document
+so it keeps following your finger off the bar and always ends on release.
 
 **Playback level.** iOS keeps the audio session in record mode for as long as a
 microphone stream is open, which routes playback through the earpiece and makes every
